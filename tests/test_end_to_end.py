@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
-from docling.datamodel.base_models import LayoutPrediction
+from docling.datamodel.base_models import BoundingBox, Cluster, LayoutPrediction
 from docling.models.base_layout_model import BaseLayoutModel
 from docling.utils.layout_postprocessor import LayoutPostprocessor
 from docling_core.types.doc import DocItemLabel
@@ -51,6 +51,16 @@ def _make_page(
 
 def _make_conv_res() -> MagicMock:
     return MagicMock()
+
+
+def _make_cluster(confidence: float = 0.9, ix: int = 0) -> Cluster:
+    return Cluster(
+        id=ix,
+        label=DocItemLabel.TEXT,
+        confidence=confidence,
+        bbox=BoundingBox(l=0.0, t=0.0, r=1.0, b=1.0),
+        cells=[],
+    )
 
 
 def _make_inference_result(
@@ -187,10 +197,8 @@ class TestEndToEndSinglePage:
             [[10.0, 20.0, 50.0, 60.0], [100.0, 200.0, 300.0, 400.0]],
         )
 
-        c1 = MagicMock()
-        c1.confidence = 0.9
-        c2 = MagicMock()
-        c2.confidence = 0.8
+        c1 = _make_cluster(confidence=0.9, ix=0)
+        c2 = _make_cluster(confidence=0.8, ix=1)
 
         with (
             patch("docling_pp_doc_layout.model.LayoutPostprocessor") as mock_pp,
@@ -291,8 +299,7 @@ class TestEndToEndMultiPage:
             {"scores": torch.tensor([0.7]), "labels": torch.tensor([2]), "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]])},
         ]
 
-        c = MagicMock()
-        c.confidence = 0.8
+        c = _make_cluster(confidence=0.8)
 
         with (
             patch("docling_pp_doc_layout.model.LayoutPostprocessor") as mock_pp,
@@ -337,8 +344,7 @@ class TestEndToEndMultiPage:
             {"scores": torch.tensor([0.8]), "labels": torch.tensor([1]), "boxes": torch.tensor([[0.0, 0.0, 1.0, 1.0]])},
         ]
 
-        c = MagicMock()
-        c.confidence = 0.85
+        c = _make_cluster(confidence=0.85)
 
         with (
             patch("docling_pp_doc_layout.model.LayoutPostprocessor") as mock_pp,
