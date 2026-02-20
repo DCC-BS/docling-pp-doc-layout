@@ -442,37 +442,27 @@ class TestPredictLayoutPageFiltering:
 
         model_instance._run_inference.assert_not_called()
 
-    def test_page_with_valid_backend_but_none_size_triggers_indexerror(self, model_instance):
-        """Bug: second loop doesn't guard against pages skipped due to None size.
-
-        When a page has a valid backend but None size, it is excluded from
-        batch_detections in the first loop. However the second loop only checks
-        the backend — so it tries to consume a batch_detections entry that was
-        never created, causing IndexError.
-        """
+    def test_page_with_valid_backend_but_none_size_is_skipped_gracefully(self, model_instance):
         page = _make_page(page_no=0, backend_valid=True, has_size=False)
         conv_res = _make_conv_res()
-        # _run_inference is never called because valid_images is empty,
-        # so batch_detections == []. The second loop then tries batch_detections[0].
         model_instance._run_inference = MagicMock(return_value=[])
 
-        with pytest.raises(IndexError):
-            model_instance.predict_layout(conv_res, [page])
+        results = model_instance.predict_layout(conv_res, [page])
 
-    def test_page_with_valid_backend_but_none_image_triggers_indexerror(self, model_instance):
-        """Bug: same as above but for get_image() returning None."""
+        assert len(results) == 1
+        assert isinstance(results[0], LayoutPrediction)
+
+    def test_page_with_valid_backend_but_none_image_is_skipped_gracefully(self, model_instance):
         page = _make_page(page_no=0, backend_valid=True, has_size=True, image=None)
         conv_res = _make_conv_res()
         model_instance._run_inference = MagicMock(return_value=[])
 
-        with pytest.raises(IndexError):
-            model_instance.predict_layout(conv_res, [page])
+        results = model_instance.predict_layout(conv_res, [page])
 
-    def test_semi_invalid_page_before_valid_page_causes_detection_misassignment_and_indexerror(self, model_instance):
-        """Bug: the semi-invalid page (valid backend, no size) steals the valid
-        page's detections at valid_idx=0; then the valid page tries valid_idx=1
-        which is out of range, raising IndexError.
-        """
+        assert len(results) == 1
+        assert isinstance(results[0], LayoutPrediction)
+
+    def test_semi_invalid_page_mixed_with_valid_page_maintains_alignment(self, model_instance):
         page_no_size = _make_page(page_no=0, backend_valid=True, has_size=False)
         page_valid = _make_page(page_no=1, backend_valid=True, has_size=True)
         conv_res = _make_conv_res()
@@ -485,8 +475,12 @@ class TestPredictLayoutPageFiltering:
             patch("docling_pp_doc_layout.model.TimeRecorder"),
         ):
             mock_pp.return_value.postprocess.return_value = ([], [])
-            with pytest.raises(IndexError):
-                model_instance.predict_layout(conv_res, [page_no_size, page_valid])
+            results = model_instance.predict_layout(conv_res, [page_no_size, page_valid])
+
+        assert len(results) == 2
+        assert isinstance(results[0], LayoutPrediction)
+        assert isinstance(results[1], LayoutPrediction)
+        model_instance._run_inference.assert_called_once_with([page_valid.get_image.return_value])
 
     def test_valid_and_invalid_backend_pages_separated_correctly(self, model_instance):
         """Only pages with valid backends contribute to inference; others get existing predictions."""
@@ -640,3 +634,67 @@ class TestPredictLayoutConfidenceScores:
             model_instance.predict_layout(conv_res, [page])
 
         assert conv_res.confidence.pages[0].ocr_score == pytest.approx(0.7, abs=0.001)
+
+
+# ---------------------------------------------------------------------------
+# TestErrorHandling
+# ---------------------------------------------------------------------------
+
+
+class TestErrorHandling:
+    """Tests for system errors like network failures, OOM, or malformed outputs."""
+
+    def test_init_raises_on_huggingface_network_error(self):
+        from docling_pp_doc_layout.model import PPDocLayoutV3Model
+
+        accel_opts = MagicMock()
+        accel_opts.device = "cpu"
+
+        # AutoImageProcessor.from_pretrained can raise ConnectionError if it fails to download
+        with (
+            patch("docling_pp_doc_layout.model.AutoImageProcessor") as mock_aip,
+            patch("docling_pp_doc_layout.model.AutoModelForObjectDetection"),
+            patch("docling_pp_doc_layout.model.decide_device", return_value="cpu"),
+        ):
+            mock_aip.from_pretrained.side_effect = ConnectionError("Network unreachable")
+
+            with pytest.raises(ConnectionError, match="Network unreachable"):
+                PPDocLayoutV3Model(
+                    artifacts_path=None,
+                    accelerator_options=accel_opts,
+                    options=PPDocLayoutV3Options(),
+                )
+
+    def test_run_inference_propagates_oom(self, model_instance):
+        page = _make_page(page_no=0, backend_valid=True, has_size=True)
+        conv_res = _make_conv_res()
+
+        # Simulate PyTorch CUDA OutOfMemoryError or similar RuntimeError
+        model_instance._run_inference = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
+
+        with pytest.raises(RuntimeError, match="CUDA out of memory"):
+            model_instance.predict_layout(conv_res, [page])
+
+    def test_run_inference_handles_malformed_hf_output(self, model_instance):
+        """If HF object detection returns an unexpected format, it should propagate KeyError."""
+        page = _make_page(page_no=0, backend_valid=True, has_size=True)
+        conv_res = _make_conv_res()
+
+        # We want to test exactly what happens when post_process_object_detection returns bad output
+        # So we un-mock _run_inference but keep _image_processor mocked
+        from docling_pp_doc_layout.model import PPDocLayoutV3Model
+
+        model_instance._run_inference = PPDocLayoutV3Model._run_inference.__get__(model_instance)
+
+        # Setup inputs to not crash earlier
+        mock_input_tensors = MagicMock()
+        mock_input_tensors.to.return_value = MagicMock()
+        model_instance._device = "cpu"
+        model_instance._image_processor.return_value = {"pixel_values": mock_input_tensors}
+        model_instance._model.return_value = MagicMock()
+
+        # Mock the postprocessor to return malformed dictionaries (e.g., missing "scores")
+        model_instance._image_processor.post_process_object_detection.return_value = [{"corrupted": "bad_data"}]
+
+        with pytest.raises(KeyError):
+            model_instance.predict_layout(conv_res, [page])

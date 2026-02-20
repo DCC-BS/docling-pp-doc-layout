@@ -130,17 +130,23 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
         valid_pages: list[Page] = []
         valid_images: list[Image.Image] = []
+        is_page_valid: list[bool] = []
 
         for page in pages:
             if page._backend is None or not page._backend.is_valid():  # noqa: SLF001
+                is_page_valid.append(False)
                 continue
             if page.size is None:
+                is_page_valid.append(False)
                 continue
             page_image = page.get_image(scale=1.0)
             if page_image is None:
+                is_page_valid.append(False)
                 continue
+
             valid_pages.append(page)
             valid_images.append(page_image)
+            is_page_valid.append(True)
 
         batch_detections: list[list[dict]] = []
         if valid_images:
@@ -150,8 +156,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         layout_predictions: list[LayoutPrediction] = []
         valid_idx = 0
 
-        for page in pages:
-            if page._backend is None or not page._backend.is_valid():  # noqa: SLF001
+        for idx, page in enumerate(pages):
+            if not is_page_valid[idx]:
                 existing = page.predictions.layout or LayoutPrediction()
                 layout_predictions.append(existing)
                 continue
