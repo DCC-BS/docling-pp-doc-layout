@@ -35,4 +35,12 @@ class PPDocLayoutV3Options(LayoutOptions):
         ),
     ] = 0.5
 
+    batch_size: Annotated[
+        int,
+        Field(
+            gt=0,
+            description="Batch size for layout inference.",
+        ),
+    ] = 8
+
     model_config = ConfigDict(extra="forbid")

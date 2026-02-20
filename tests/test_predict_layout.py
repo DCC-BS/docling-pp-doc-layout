@@ -10,6 +10,7 @@ import math
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 from docling.datamodel.base_models import BoundingBox, Cluster, LayoutPrediction
 from docling_core.types.doc import DocItemLabel
 from PIL import Image
@@ -352,6 +353,47 @@ class TestPredictLayoutHappyPath:
         assert bbox.t == pytest.approx(22.2, abs=0.001)
         assert bbox.r == pytest.approx(33.3, abs=0.001)
         assert bbox.b == pytest.approx(44.4, abs=0.001)
+
+    def test_run_inference_flattens_polygons_to_bounding_boxes(self, model_instance):
+        from docling_pp_doc_layout.model import PPDocLayoutV3Model
+
+        # Test how _run_inference natively handles polygons
+        model_instance._run_inference = PPDocLayoutV3Model._run_inference.__get__(model_instance)
+        model_instance._device = "cpu"
+
+        mock_input = MagicMock()
+        mock_input.to.return_value = MagicMock()
+        model_instance._image_processor.return_value = {"pixel_values": mock_input}
+
+        model_instance._model.return_value = MagicMock()
+
+        # Dummy image to get expected target sizes check passing
+        img = Image.new("RGB", (800, 600))
+
+        # Simulate HF processor output containing polygons
+        model_instance._image_processor.post_process_object_detection.return_value = [
+            {
+                "scores": [torch.tensor(0.9)],
+                "labels": [torch.tensor(0)],
+                "boxes": [torch.tensor([0.0, 0.0, 10.0, 10.0])],  # Should be ignored in favor of polygons
+                "polygons": [
+                    [[11.0, 22.0], [33.0, 22.0], [33.0, 44.0], [11.0, 44.0]]
+                ],  # Should extract [11.0, 22.0, 33.0, 44.0]
+            }
+        ]
+
+        # Execute
+        batch_detections = model_instance._run_inference([img])
+
+        # Verify
+        assert len(batch_detections) == 1
+        assert len(batch_detections[0]) == 1
+        det = batch_detections[0][0]
+
+        assert det["l"] == 11.0
+        assert det["r"] == 33.0
+        assert det["t"] == 22.0
+        assert det["b"] == 44.0
 
     def test_postprocessor_called_with_correct_page_and_options(self, model_instance):
         page = _make_page(page_no=0)

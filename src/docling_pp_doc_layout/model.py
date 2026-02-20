@@ -99,15 +99,34 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         batch_detections: list[list[dict]] = []
         for result in results:
             detections: list[dict] = []
-            for score, label_id, box in zip(
+
+            polys = result.get("polygons") or result.get("polygon_points")
+            if polys is None:
+                polys = [None] * len(result["scores"])
+
+            for score, label_id, box, poly in zip(
                 result["scores"],
                 result["labels"],
                 result["boxes"],
+                polys,
                 strict=True,
             ):
                 raw_label = self._id2label.get(label_id.item(), "text")
                 doc_label = LABEL_MAP.get(raw_label, DocItemLabel.TEXT)
-                x_min, y_min, x_max, y_max = box.tolist()
+
+                if poly is not None and len(poly) > 0:
+                    # Flatten or handle nested points to extract min/max
+                    if isinstance(poly[0], int | float):
+                        xs = poly[0::2]
+                        ys = poly[1::2]
+                    else:
+                        xs = [pt[0] for pt in poly]
+                        ys = [pt[1] for pt in poly]
+                    x_min, x_max = min(xs), max(xs)
+                    y_min, y_max = min(ys), max(ys)
+                else:
+                    x_min, y_min, x_max, y_max = box.tolist()
+
                 detections.append({
                     "label": doc_label,
                     "confidence": score.item(),
@@ -151,7 +170,10 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         batch_detections: list[list[dict]] = []
         if valid_images:
             with TimeRecorder(conv_res, "layout"):
-                batch_detections = self._run_inference(valid_images)
+                bs = self.options.batch_size
+                for i in range(0, len(valid_images), bs):
+                    batch = valid_images[i : i + bs]
+                    batch_detections.extend(self._run_inference(batch))
 
         layout_predictions: list[LayoutPrediction] = []
         valid_idx = 0

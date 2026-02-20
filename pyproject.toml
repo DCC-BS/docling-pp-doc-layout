@@ -32,6 +32,9 @@ Repository = "https://github.com/DCC-BS/docling-pp-doc-layout"
 Issues = "https://github.com/DCC-BS/docling-pp-doc-layout/issues"
 Changelog = "https://github.com/DCC-BS/docling-pp-doc-layout/releases"
 
+[project.entry-points."docling.plugins"]
+layout_model = "docling_pp_doc_layout.plugin:layout_engines"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
