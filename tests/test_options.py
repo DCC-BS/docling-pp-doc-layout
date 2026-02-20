@@ -15,8 +15,7 @@ class TestKind:
         assert PPDocLayoutV3Options.kind == "ppdoclayout-v3"
 
     def test_kind_is_class_var(self):
-        opts = PPDocLayoutV3Options()
-        assert "kind" not in opts.model_fields
+        assert "kind" not in PPDocLayoutV3Options.model_fields
 
 
 class TestDefaults:
@@ -78,7 +77,7 @@ class TestValidation:
 
     def test_extra_fields_forbidden(self):
         with pytest.raises(ValidationError):
-            PPDocLayoutV3Options()
+            PPDocLayoutV3Options(unknown_field="oops")
 
 
 class TestPostprocessorCompatibility:
