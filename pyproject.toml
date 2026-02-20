@@ -6,7 +6,7 @@ authors = [
     {name = "Yanick Schraner", email = "yanick.schraner@bs.ch"},
     {name = "Tobias Bollinger", email = "tobias.bollinger@bs.ch"},
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 readme = "README.md"
 keywords = []
