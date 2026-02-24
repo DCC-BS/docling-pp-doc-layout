@@ -1,6 +1,6 @@
 [project]
 name = "docling-pp-doc-layout"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Docling plugin for PaddlePaddle PP-DocLayout-V3 model document layout detection."
 authors = [
     {name = "Yanick Schraner", email = "yanick.schraner@bs.ch"},
@@ -32,8 +32,8 @@ Repository = "https://github.com/DCC-BS/docling-pp-doc-layout"
 Issues = "https://github.com/DCC-BS/docling-pp-doc-layout/issues"
 Changelog = "https://github.com/DCC-BS/docling-pp-doc-layout/releases"
 
-[project.entry-points."docling.plugins"]
-layout_model = "docling_pp_doc_layout.plugin:layout_engines"
+[project.entry-points."docling"]
+layout_model = "docling_pp_doc_layout.plugin"
 
 [dependency-groups]
 dev = [
