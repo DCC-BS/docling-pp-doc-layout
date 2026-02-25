@@ -101,13 +101,35 @@ print("Converted elements:", len(result.document.elements))
 
 ## Configuration Options
 
-The `PPDocLayoutV3Options` dataclass gives you full control over the engine:
+All options can be set via environment variables (useful for Docker / Compose
+deployments) or programmatically via `PPDocLayoutV3Options`.  Explicit
+constructor arguments always take precedence over environment variables.
+
+### Environment variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `PP_DOC_LAYOUT_MODEL_NAME` | HuggingFace model repository ID | `PaddlePaddle/PP-DocLayoutV3_safetensors` |
+| `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` | Minimum detection confidence (0.0–1.0) | `0.5` |
+| `PP_DOC_LAYOUT_BATCH_SIZE` | Batch size for layout inference | `8` |
+| `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` | Create clusters for orphaned elements (`true`/`false`) | `true` |
+| `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` | Retain empty clusters in results (`true`/`false`) | `false` |
+| `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` | Skip table-cell assignment (`true`/`false`) | `false` |
+
+Boolean variables accept `true`, `1`, `yes` (case-insensitive) as truthy values; any other value is treated as `false`.
+
+### `PPDocLayoutV3Options`
+
+The `PPDocLayoutV3Options` class gives you full control over the engine:
 
 | Parameter               | Type    | Default | Description |
 |-------------------------|---------|---------|-------------|
-| `batch_size`            | `int`   | 8       | How many pages to process per single step. Decrease to lower memory usage; Increase to speed up processing of large documents. |
-| `confidence_threshold`  | `float` | 0.5     | The minimum confidence score (0.0 - 1.0) required to keep a layout detection cluster. |
-| `model_name`            | `str`   | `"PaddlePaddle/PP-DocLayoutV3_safetensors"` | HuggingFace repository ID. Allows overriding if you host your local copy or a fine-tuned version. |
+| `model_name`            | `str`   | `PP_DOC_LAYOUT_MODEL_NAME` env or `"PaddlePaddle/PP-DocLayoutV3_safetensors"` | HuggingFace repository ID. Allows overriding if you host your local copy or a fine-tuned version. |
+| `confidence_threshold`  | `float` | `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` env or `0.5` | The minimum confidence score (0.0–1.0) required to keep a layout detection cluster. |
+| `batch_size`            | `int`   | `PP_DOC_LAYOUT_BATCH_SIZE` env or `8` | How many pages to process per single step. Decrease to lower memory usage; Increase to speed up processing of large documents. |
+| `create_orphan_clusters` | `bool` | `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` env or `True` | Create clusters for orphaned elements not assigned to any structure. |
+| `keep_empty_clusters`   | `bool`  | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` env or `False` | Retain empty clusters in layout analysis results. |
+| `skip_cell_assignment`  | `bool`  | `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` env or `False` | Skip assignment of cells to table structures during layout analysis. |
 
 
 ## Development
