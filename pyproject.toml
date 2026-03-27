@@ -45,6 +45,8 @@ dev = [
 ]
 
 [tool.uv]
+exclude-newer = "1 week"
+exclude-newer-package = { dcc-backend-common = "P1D" }
 override-dependencies = [
     "huggingface-hub>=0.23",
     "transformers>=4.34.0",
