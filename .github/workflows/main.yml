@@ -13,7 +13,7 @@ jobs:
   # Quality checks via DCC-BS reusable workflow (ruff lint + format + ty)
   # ---------------------------------------------------------------------------
   quality:
-    uses: DCC-BS/ci-workflows/.github/workflows/python-backend-ci.yml@dd91f584deec446a76ab9f3b1afbeafa9a6c244b # v9
+    uses: DCC-BS/ci-workflows/.github/workflows/python-backend-ci.yml@6d1cca8023e197f6e9cda5e64f3b3f0448f4cf6e # v9
     with:
       python_versions: '["3.13"]'
       quality_python_version: "3.13"
