@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 from typing import Annotated, ClassVar, Literal
 
-from docling.datamodel.pipeline_options import LayoutOptions
+from docling.datamodel.pipeline_options import (
+    BaseLayoutOptions,
+    BaseLayoutPostprocessorOptions,
+)
 from pydantic import ConfigDict, Field
 
 
@@ -22,7 +25,7 @@ def _parse_bool(value: str) -> bool:
     return value.lower() in ("true", "1", "yes")
 
 
-class PPDocLayoutV3Options(LayoutOptions):
+class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
     """Options for the PP-DocLayout-V3 layout detection engine.
 
     Uses a HuggingFace-hosted PP-DocLayout-V3 model to detect document

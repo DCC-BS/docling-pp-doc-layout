@@ -82,17 +82,13 @@ pipeline_options = PdfPipelineOptions()
 
 # 2. Configure our custom PPDocLayoutV3Options
 pipeline_options.layout_options = PPDocLayoutV3Options(
-    batch_size=8,                  # Tweak for GPU VRAM usage
-    confidence_threshold=0.5,      # Filter low-confidence detections
-    model_name="PaddlePaddle/PP-DocLayoutV3_safetensors" # Target HuggingFace model repo
+    batch_size=8,  # Tweak for GPU VRAM usage
+    confidence_threshold=0.5,  # Filter low-confidence detections
+    model_name="PaddlePaddle/PP-DocLayoutV3_safetensors",  # Target HuggingFace model repo
 )
 
 # 3. Create the converter
-converter = DocumentConverter(
-    format_options={
-        "pdf": PdfFormatOption(pipeline_options=pipeline_options)
-    }
-)
+converter = DocumentConverter(format_options={"pdf": PdfFormatOption(pipeline_options=pipeline_options)})
 
 # 4. Convert Document
 result = converter.convert("path/to/your/document.pdf")

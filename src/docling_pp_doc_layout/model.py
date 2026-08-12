@@ -139,15 +139,11 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
         return batch_detections
 
-    def predict_layout(
-        self,
-        conv_res: ConversionResult,
+    @staticmethod
+    def _extract_valid_pages(
         pages: Sequence[Page],
-    ) -> Sequence[LayoutPrediction]:
-        """Detect layout regions for a batch of document pages."""
-        pages = list(pages)
-
-        valid_pages: list[Page] = []
+    ) -> tuple[list[Image.Image], list[bool]]:
+        """Extract valid images and page validity flags from a sequence of pages."""
         valid_images: list[Image.Image] = []
         is_page_valid: list[bool] = []
 
@@ -163,9 +159,19 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 is_page_valid.append(False)
                 continue
 
-            valid_pages.append(page)
             valid_images.append(page_image)
             is_page_valid.append(True)
+
+        return valid_images, is_page_valid
+
+    def predict_layout(
+        self,
+        conv_res: ConversionResult,
+        pages: Sequence[Page],
+    ) -> Sequence[LayoutPrediction]:
+        """Detect layout regions for a batch of document pages."""
+        pages = list(pages)
+        valid_images, is_page_valid = self._extract_valid_pages(pages)
 
         batch_detections: list[list[dict]] = []
         if valid_images:
@@ -203,7 +209,12 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 )
                 clusters.append(cluster)
 
-            processed_clusters, processed_cells = LayoutPostprocessor(page, clusters, self.options).postprocess()
+            postprocess_result = LayoutPostprocessor(page, clusters, self.options).postprocess()
+            if isinstance(postprocess_result, tuple):
+                processed_clusters, processed_cells = postprocess_result
+            else:
+                processed_clusters = postprocess_result
+                processed_cells = [c for c in page.cells if getattr(c, "from_ocr", False)]
 
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -216,7 +227,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                     np.mean([c.confidence for c in processed_clusters])
                 )
                 conv_res.confidence.pages[page.page_no].ocr_score = float(
-                    np.mean([c.confidence for c in processed_cells if c.from_ocr])
+                    np.mean([c.confidence for c in processed_cells if getattr(c, "from_ocr", False)])
                 )
 
             prediction = LayoutPrediction(clusters=processed_clusters)
