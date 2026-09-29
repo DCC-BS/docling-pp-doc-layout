@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# docling >= 2.116 runs the LayoutPostprocessor (cell assignment, empty-cluster removal,
+# layout score) as its own pipeline stage *after* OCR, and only OCRs inside layout
+# regions. Layout models must therefore return the raw detections: post-processing them
+# here, before OCR, drops every region without PDF text, i.e. whole scanned pages.
+# Older docling expects the layout model to post-process itself.
+DOCLING_POSTPROCESSES_LAYOUT = hasattr(BaseLayoutModel, "requires_layout_postprocessing")
+
 
 class PPDocLayoutV3Model(BaseLayoutModel):
     """Layout engine using PP-DocLayout-V3 via HuggingFace transformers."""
@@ -208,6 +215,10 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                     cells=[],
                 )
                 clusters.append(cluster)
+
+            if DOCLING_POSTPROCESSES_LAYOUT:
+                layout_predictions.append(LayoutPrediction(clusters=clusters))
+                continue
 
             postprocess_result = LayoutPostprocessor(page, clusters, self.options).postprocess()
             if isinstance(postprocess_result, tuple):

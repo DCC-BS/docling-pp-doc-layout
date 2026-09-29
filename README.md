@@ -127,6 +127,11 @@ The `PPDocLayoutV3Options` class gives you full control over the engine:
 | `keep_empty_clusters`   | `bool`  | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` env or `False` | Retain empty clusters in layout analysis results. |
 | `skip_cell_assignment`  | `bool`  | `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` env or `False` | Skip assignment of cells to table structures during layout analysis. |
 
+`create_orphan_clusters`, `keep_empty_clusters` and `skip_cell_assignment` configure docling's
+layout post-processing. With docling 2.116 or newer, docling runs that step itself after OCR
+(OCR only runs inside layout regions), so the plugin returns the raw detections. With older
+docling the plugin post-processes its detections itself.
+
 
 ## Development
 

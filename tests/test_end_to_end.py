@@ -209,6 +209,7 @@ class TestEndToEndSinglePage:
 
         assert len(results[0].clusters) == 2
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_chart_label_mapped_to_picture_not_missing_key(self, model_from_plugin):
         """chart (id=3) → PICTURE must not KeyError in LayoutPostprocessor."""
         page = _make_page(page_no=0)
@@ -233,6 +234,7 @@ class TestEndToEndSinglePage:
         assert captured_clusters[0].label == DocItemLabel.PICTURE
         assert captured_clusters[0].label in LayoutPostprocessor.CONFIDENCE_THRESHOLDS
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_all_id2label_entries_produce_postprocessor_safe_labels(self, model_from_plugin):
         """Every label in the model's id2label must map to a label that
         LayoutPostprocessor.CONFIDENCE_THRESHOLDS knows about."""
@@ -264,6 +266,21 @@ class TestEndToEndSinglePage:
             assert captured_clusters[0].label in supported, (
                 f"id2label[{label_id}]='{raw_name}' → {captured_clusters[0].label!r} not in CONFIDENCE_THRESHOLDS"
             )
+
+    def test_raw_clusters_use_postprocessor_safe_labels(self, model_from_plugin, monkeypatch):
+        """docling >= 2.116 post-processes the returned clusters itself, so their labels
+        must still be known to LayoutPostprocessor.CONFIDENCE_THRESHOLDS."""
+        monkeypatch.setattr("docling_pp_doc_layout.model.DOCLING_POSTPROCESSES_LAYOUT", True)
+        supported = set(LayoutPostprocessor.CONFIDENCE_THRESHOLDS.keys())
+        page = _make_page(page_no=0)
+
+        for label_id, raw_name in model_from_plugin._id2label.items():
+            self._setup_inference(model_from_plugin, [0.9], [label_id], [[0.0, 0.0, 1.0, 1.0]])
+            with patch("docling_pp_doc_layout.model.TimeRecorder"):
+                results = model_from_plugin.predict_layout(_make_conv_res(), [page])
+
+            assert len(results[0].clusters) == 1, f"Expected 1 cluster for label_id={label_id}"
+            assert results[0].clusters[0].label in supported, f"id2label[{label_id}]='{raw_name}' not supported"
 
     def test_no_detections_yields_empty_clusters(self, model_from_plugin):
         page = _make_page(page_no=0)

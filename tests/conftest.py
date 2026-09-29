@@ -34,3 +34,9 @@ def transformers_available():
     """Skip the test when transformers is mocked rather than real."""
     if _transformers_mocked:
         pytest.skip("transformers not installed (mocked)")
+
+
+@pytest.fixture
+def legacy_postprocessing(monkeypatch):
+    """Simulate docling < 2.116, where layout models post-process their own clusters."""
+    monkeypatch.setattr("docling_pp_doc_layout.model.DOCLING_POSTPROCESSES_LAYOUT", False)

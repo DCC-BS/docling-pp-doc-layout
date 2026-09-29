@@ -257,6 +257,7 @@ class TestPredictLayoutHappyPath:
 
         page.get_image.assert_called_once_with(scale=1.0)
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_detections_become_clusters_passed_to_postprocessor(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -284,6 +285,7 @@ class TestPredictLayoutHappyPath:
         assert captured_clusters[0].label == DocItemLabel.TEXT
         assert captured_clusters[1].label == DocItemLabel.TABLE
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_cluster_ids_are_sequential_from_zero(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -310,6 +312,7 @@ class TestPredictLayoutHappyPath:
 
         assert [c.id for c in captured_clusters] == [0, 1, 2]
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_postprocessed_clusters_end_up_in_prediction(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -326,6 +329,7 @@ class TestPredictLayoutHappyPath:
 
         assert results[0].clusters == [final_cluster]
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_cluster_bbox_coordinates_are_correct(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -395,6 +399,7 @@ class TestPredictLayoutHappyPath:
         assert det["t"] == 22.0
         assert det["b"] == 44.0
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_postprocessor_called_with_correct_page_and_options(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -412,6 +417,7 @@ class TestPredictLayoutHappyPath:
         assert call_args[0][0] is page
         assert call_args[0][2] is model_instance.options
 
+    @pytest.mark.usefixtures("legacy_postprocessing")
     def test_cluster_confidence_stored(self, model_instance):
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -562,8 +568,13 @@ class TestPredictLayoutPageFiltering:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("legacy_postprocessing")
 class TestPredictLayoutConfidenceScores:
-    """Tests for layout_score and ocr_score written to ConversionResult."""
+    """Tests for layout_score and ocr_score written to ConversionResult.
+
+    Only on docling < 2.116: newer docling computes the scores in its own
+    layout post-processing stage.
+    """
 
     def test_layout_score_is_mean_of_processed_cluster_confidences(self, model_instance):
         page = _make_page(page_no=7)
@@ -740,3 +751,98 @@ class TestErrorHandling:
 
         with pytest.raises(KeyError):
             model_instance.predict_layout(conv_res, [page])
+
+
+# ---------------------------------------------------------------------------
+# TestPredictLayoutRawClusters
+# ---------------------------------------------------------------------------
+
+
+class TestPredictLayoutRawClusters:
+    """docling >= 2.116 post-processes layout after OCR, so the model returns raw detections."""
+
+    @pytest.fixture(autouse=True)
+    def _docling_postprocesses_layout(self, monkeypatch):
+        monkeypatch.setattr("docling_pp_doc_layout.model.DOCLING_POSTPROCESSES_LAYOUT", True)
+
+    @staticmethod
+    def _detections() -> list[dict]:
+        return [
+            {"label": DocItemLabel.TEXT, "confidence": 0.91, "l": 10.0, "t": 20.0, "r": 50.0, "b": 60.0},
+            {"label": DocItemLabel.SECTION_HEADER, "confidence": 0.72, "l": 5.0, "t": 5.0, "r": 100.0, "b": 15.0},
+            {"label": DocItemLabel.TABLE, "confidence": 0.8, "l": 0.0, "t": 70.0, "r": 200.0, "b": 300.0},
+        ]
+
+    def test_flag_matches_installed_docling(self):
+        from docling.models.base_layout_model import BaseLayoutModel
+
+        from docling_pp_doc_layout import model
+
+        assert hasattr(BaseLayoutModel, "requires_layout_postprocessing"), "tests run against docling >= 2.116"
+        assert model.DOCLING_POSTPROCESSES_LAYOUT is True
+
+    def test_detections_are_returned_as_clusters(self, model_instance):
+        page = _make_page(page_no=0)
+        model_instance._run_inference = MagicMock(return_value=[self._detections()])
+
+        with patch("docling_pp_doc_layout.model.TimeRecorder"):
+            results = model_instance.predict_layout(_make_conv_res(), [page])
+
+        clusters = results[0].clusters
+        assert [c.id for c in clusters] == [0, 1, 2]
+        assert [c.label for c in clusters] == [DocItemLabel.TEXT, DocItemLabel.SECTION_HEADER, DocItemLabel.TABLE]
+        assert [c.confidence for c in clusters] == pytest.approx([0.91, 0.72, 0.8])
+        bbox = clusters[0].bbox
+        assert (bbox.l, bbox.t, bbox.r, bbox.b) == (10.0, 20.0, 50.0, 60.0)
+
+    def test_postprocessor_is_not_called(self, model_instance):
+        page = _make_page(page_no=0)
+        model_instance._run_inference = MagicMock(return_value=[self._detections()])
+
+        with (
+            patch("docling_pp_doc_layout.model.LayoutPostprocessor") as mock_pp,
+            patch("docling_pp_doc_layout.model.TimeRecorder"),
+        ):
+            model_instance.predict_layout(_make_conv_res(), [page])
+
+        mock_pp.assert_not_called()
+
+    def test_regions_without_pdf_text_are_kept(self, model_instance):
+        """Regression: on scanned pages no region has PDF text cells before OCR.
+
+        Post-processing before OCR removed every such region, so docling (which only
+        OCRs inside layout regions) returned nothing for the whole page.
+        """
+        page = _make_page(page_no=0)
+        page.cells = []
+        model_instance._run_inference = MagicMock(return_value=[self._detections()])
+
+        with patch("docling_pp_doc_layout.model.TimeRecorder"):
+            results = model_instance.predict_layout(_make_conv_res(), [page])
+
+        assert len(results[0].clusters) == 3
+        assert all(c.cells == [] for c in results[0].clusters)
+
+    def test_scores_are_left_to_docling(self, model_instance):
+        page = _make_page(page_no=3)
+        conv_res = _make_conv_res()
+        conv_res.confidence.pages = {}
+        model_instance._run_inference = MagicMock(return_value=[self._detections()])
+
+        with patch("docling_pp_doc_layout.model.TimeRecorder"):
+            model_instance.predict_layout(conv_res, [page])
+
+        assert conv_res.confidence.pages == {}
+
+    def test_invalid_pages_keep_their_existing_prediction(self, model_instance):
+        valid = _make_page(page_no=0)
+        invalid = _make_page(page_no=1, backend_valid=False)
+        existing = LayoutPrediction(clusters=[_make_cluster(ix=7)])
+        invalid.predictions.layout = existing
+        model_instance._run_inference = MagicMock(return_value=[self._detections()])
+
+        with patch("docling_pp_doc_layout.model.TimeRecorder"):
+            results = model_instance.predict_layout(_make_conv_res(), [valid, invalid])
+
+        assert len(results[0].clusters) == 3
+        assert results[1] is existing
