@@ -83,7 +83,7 @@ pipeline_options = PdfPipelineOptions()
 # 2. Configure our custom PPDocLayoutV3Options
 pipeline_options.layout_options = PPDocLayoutV3Options(
     batch_size=8,  # Tweak for GPU VRAM usage
-    confidence_threshold=0.5,  # Filter low-confidence detections
+    confidence_threshold=0.3,  # Filter low-confidence detections
     model_name="PaddlePaddle/PP-DocLayoutV3_safetensors",  # Target HuggingFace model repo
 )
 
@@ -106,7 +106,7 @@ constructor arguments always take precedence over environment variables.
 | Variable | Description | Default |
 |---|---|---|
 | `PP_DOC_LAYOUT_MODEL_NAME` | HuggingFace model repository ID | `PaddlePaddle/PP-DocLayoutV3_safetensors` |
-| `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` | Minimum detection confidence (0.0–1.0) | `0.5` |
+| `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` | Minimum detection confidence (0.0–1.0) | `0.3` |
 | `PP_DOC_LAYOUT_BATCH_SIZE` | Batch size for layout inference | `8` |
 | `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` | Create clusters for orphaned elements (`true`/`false`) | `true` |
 | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` | Retain empty clusters in results (`true`/`false`) | `false` |
@@ -121,7 +121,7 @@ The `PPDocLayoutV3Options` class gives you full control over the engine:
 | Parameter               | Type    | Default | Description |
 |-------------------------|---------|---------|-------------|
 | `model_name`            | `str`   | `PP_DOC_LAYOUT_MODEL_NAME` env or `"PaddlePaddle/PP-DocLayoutV3_safetensors"` | HuggingFace repository ID. Allows overriding if you host your local copy or a fine-tuned version. |
-| `confidence_threshold`  | `float` | `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` env or `0.5` | The minimum confidence score (0.0–1.0) required to keep a layout detection cluster. |
+| `confidence_threshold`  | `float` | `PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD` env or `0.3` | The minimum confidence score (0.0–1.0) required to keep a layout detection cluster. Handwriting and text in photos often score 0.3–0.4, so higher values drop it. |
 | `batch_size`            | `int`   | `PP_DOC_LAYOUT_BATCH_SIZE` env or `8` | How many pages to process per single step. Decrease to lower memory usage; Increase to speed up processing of large documents. |
 | `create_orphan_clusters` | `bool` | `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` env or `True` | Create clusters for orphaned elements not assigned to any structure. |
 | `keep_empty_clusters`   | `bool`  | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` env or `False` | Retain empty clusters in layout analysis results. |

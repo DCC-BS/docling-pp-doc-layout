@@ -404,8 +404,8 @@ class TestEndToEndConfidenceThreshold:
         call_kwargs = model_from_plugin._image_processor.post_process_object_detection.call_args.kwargs
         assert call_kwargs["threshold"] == pytest.approx(0.73, abs=1e-6)
 
-    def test_default_threshold_is_0_5(self, model_from_plugin):
-        assert model_from_plugin.options.confidence_threshold == pytest.approx(0.5)
+    def test_default_threshold_is_0_3(self, model_from_plugin):
+        assert model_from_plugin.options.confidence_threshold == pytest.approx(0.3)
 
         page = _make_page(page_no=0)
         conv_res = _make_conv_res()
@@ -423,7 +423,7 @@ class TestEndToEndConfidenceThreshold:
             model_from_plugin.predict_layout(conv_res, [page])
 
         call_kwargs = model_from_plugin._image_processor.post_process_object_detection.call_args.kwargs
-        assert call_kwargs["threshold"] == pytest.approx(0.5, abs=1e-6)
+        assert call_kwargs["threshold"] == pytest.approx(0.3, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

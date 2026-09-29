@@ -38,7 +38,8 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
     Attributes:
         model_name: HuggingFace model repository ID.
             Falls back to the ``PP_DOC_LAYOUT_MODEL_NAME`` env var.
-        confidence_threshold: Minimum confidence score for detections.
+        confidence_threshold: Minimum confidence score for detections (default 0.3;
+            handwriting and photo text often score 0.3-0.4).
             Falls back to the ``PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD`` env var.
         batch_size: Number of pages per inference batch.
             Falls back to the ``PP_DOC_LAYOUT_BATCH_SIZE`` env var.
@@ -69,7 +70,7 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
             le=1.0,
             description="Minimum confidence score to keep a detection.",
         ),
-    ] = Field(default_factory=lambda: float(os.environ.get("PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD", "0.5")))
+    ] = Field(default_factory=lambda: float(os.environ.get("PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD", "0.3")))
 
     batch_size: Annotated[
         int,

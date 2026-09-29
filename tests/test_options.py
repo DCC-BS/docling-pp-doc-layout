@@ -31,7 +31,7 @@ class TestDefaults:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PP_DOC_LAYOUT_CONFIDENCE_THRESHOLD", None)
             opts = PPDocLayoutV3Options()
-            assert opts.confidence_threshold == 0.5
+            assert opts.confidence_threshold == 0.3
 
     def test_default_batch_size(self):
         with patch.dict(os.environ, {}, clear=False):

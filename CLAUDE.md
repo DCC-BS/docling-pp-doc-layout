@@ -34,7 +34,7 @@ The plugin has four core modules under `src/docling_pp_doc_layout/`:
 
 - **`plugin.py`** — Entry point. Exposes `layout_engines()` which returns a dict mapping the engine name to `PPDocLayoutV3Model`. Docling discovers plugins via this function.
 
-- **`options.py`** — `PPDocLayoutV3Options` (Pydantic model). Configures the model name, confidence threshold (0.0–1.0, default 0.5), and inherits cluster options from Docling. `kind = "ppdoclayout-v3"` identifies this engine type.
+- **`options.py`** — `PPDocLayoutV3Options` (Pydantic model). Configures the model name, confidence threshold (0.0–1.0, default 0.3), and inherits cluster options from Docling. `kind = "ppdoclayout-v3"` identifies this engine type.
 
 - **`model.py`** — `PPDocLayoutV3Model`, the core detection class. Inherits from `BaseLayoutModel`. Key flow: `predict_layout()` extracts PIL images from pages → `_run_inference()` runs HuggingFace transformers batch inference → maps raw labels via `label_mapping.py` → returns `LayoutPrediction` objects to Docling. With docling >= 2.116 (`DOCLING_POSTPROCESSES_LAYOUT`) the clusters are returned raw, because docling runs `LayoutPostprocessor` as its own stage after OCR; post-processing them here dropped every region without PDF text (whole scanned pages). Only older docling gets the in-model `LayoutPostprocessor` call.
 
