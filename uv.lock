@@ -498,7 +498,7 @@ wheels = [
 
 [[package]]
 name = "docling-pp-doc-layout"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "docling" },

@@ -11,45 +11,51 @@ from __future__ import annotations
 from docling.utils.layout_postprocessor import LayoutPostprocessor
 from docling_core.types.doc import DocItemLabel
 
-from docling_pp_doc_layout.label_mapping import LABEL_MAP
+from docling_pp_doc_layout.label_mapping import LABEL_MAP, PP_DOC_LAYOUT_V3_CLASSES, class_names
 
 SUPPORTED_LABELS: set[DocItemLabel] = set(LayoutPostprocessor.CONFIDENCE_THRESHOLDS.keys())
 
-PP_DOCLAYOUT_V3_RAW_LABELS = [
-    "abstract",
-    "algorithm",
-    "aside_text",
-    "chart",
-    "content",
-    "doc_title",
-    "figure_title",
-    "footer",
-    "footnote",
-    "formula",
-    "formula_number",
-    "header",
-    "image",
-    "number",
-    "paragraph_title",
-    "reference",
-    "reference_content",
-    "seal",
-    "table",
-    "text",
-    "vision_footnote",
-]
+# The names the HuggingFace config.json of PP-DocLayoutV3_safetensors uses, by class id
+HF_CONFIG_NAMES = [
+    "abstract", "algorithm", "aside_text", "chart", "content", "formula", "doc_title", "figure_title", "footer",
+    "footer", "footnote", "formula_number", "header", "header", "image", "formula", "number", "paragraph_title",
+    "reference", "reference_content", "seal", "table", "text", "text", "vision_footnote",
+]  # fmt: skip
 
 
 class TestCoverage:
-    """All 21 raw PP-DocLayout-V3 labels must be present in the mapping."""
+    """Every PP-DocLayout-V3 class, and every name the HuggingFace config uses, is mapped."""
 
-    def test_all_raw_labels_covered(self):
-        for raw in PP_DOCLAYOUT_V3_RAW_LABELS:
-            assert raw in LABEL_MAP, f"Raw label '{raw}' is missing from LABEL_MAP"
+    def test_all_model_classes_covered(self):
+        for raw in PP_DOC_LAYOUT_V3_CLASSES:
+            assert raw in LABEL_MAP, f"Class '{raw}' is missing from LABEL_MAP"
+
+    def test_all_hf_config_names_covered(self):
+        for raw in HF_CONFIG_NAMES:
+            assert raw in LABEL_MAP, f"HF config name '{raw}' is missing from LABEL_MAP"
 
     def test_no_extra_entries(self):
-        extras = set(LABEL_MAP.keys()) - set(PP_DOCLAYOUT_V3_RAW_LABELS)
+        extras = set(LABEL_MAP) - set(PP_DOC_LAYOUT_V3_CLASSES) - set(HF_CONFIG_NAMES)
         assert not extras, f"Unexpected entries in LABEL_MAP: {extras}"
+
+
+class TestClassNames:
+    """The merged HuggingFace names are restored to the model's 25 classes."""
+
+    def test_hf_config_is_restored(self):
+        names = class_names(dict(enumerate(HF_CONFIG_NAMES)))
+        assert names == list(PP_DOC_LAYOUT_V3_CLASSES)
+        assert names[13] == "header_image"
+        assert names[15] == "inline_formula"
+
+    def test_other_models_keep_their_names(self):
+        assert class_names({0: "text", 1: "table", 2: "image"}) == ["text", "table", "image"]
+
+    def test_gaps_fall_back_to_text(self):
+        assert class_names({0: "table", 2: "image"}) == ["table", "text", "image"]
+
+    def test_empty(self):
+        assert class_names({}) == []
 
 
 class TestValidity:
@@ -116,8 +122,18 @@ class TestSpecificMappings:
     def test_reference_maps_to_text(self):
         assert LABEL_MAP["reference"] == DocItemLabel.TEXT
 
-    def test_reference_content_maps_to_text(self):
-        assert LABEL_MAP["reference_content"] == DocItemLabel.TEXT
+    def test_reference_content_maps_to_list_item(self):
+        assert LABEL_MAP["reference_content"] == DocItemLabel.LIST_ITEM
+
+    def test_inline_formula_maps_to_text(self):
+        assert LABEL_MAP["inline_formula"] == DocItemLabel.TEXT
+
+    def test_display_formula_maps_to_formula(self):
+        assert LABEL_MAP["display_formula"] == DocItemLabel.FORMULA
+
+    def test_logos_are_page_furniture(self):
+        assert LABEL_MAP["header_image"] == DocItemLabel.PAGE_HEADER
+        assert LABEL_MAP["footer_image"] == DocItemLabel.PAGE_FOOTER
 
     def test_seal_maps_to_picture(self):
         assert LABEL_MAP["seal"] == DocItemLabel.PICTURE

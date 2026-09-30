@@ -111,6 +111,7 @@ constructor arguments always take precedence over environment variables.
 | `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` | Create clusters for orphaned elements (`true`/`false`) | `true` |
 | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` | Retain empty clusters in results (`true`/`false`) | `false` |
 | `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` | Skip table-cell assignment (`true`/`false`) | `false` |
+| `PP_DOC_LAYOUT_LIST_DETECTION` | List-item detection: `rules`, `heron` or `off` (see below) | `rules` |
 
 Boolean variables accept `true`, `1`, `yes` (case-insensitive) as truthy values; any other value is treated as `false`.
 
@@ -126,12 +127,55 @@ The `PPDocLayoutV3Options` class gives you full control over the engine:
 | `create_orphan_clusters` | `bool` | `PP_DOC_LAYOUT_CREATE_ORPHAN_CLUSTERS` env or `True` | Create clusters for orphaned elements not assigned to any structure. |
 | `keep_empty_clusters`   | `bool`  | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` env or `False` | Retain empty clusters in layout analysis results. |
 | `skip_cell_assignment`  | `bool`  | `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` env or `False` | Skip assignment of cells to table structures during layout analysis. |
+| `list_detection`        | `str`   | `PP_DOC_LAYOUT_LIST_DETECTION` env or `"rules"` | How list items are found: `"rules"`, `"heron"` or `"off"` (see below). |
 
 `create_orphan_clusters`, `keep_empty_clusters` and `skip_cell_assignment` configure docling's
 layout post-processing. With docling 2.116 or newer, docling runs that step itself after OCR
 (OCR only runs inside layout regions), so the plugin returns the raw detections. With older
 docling the plugin post-processes its detections itself.
 
+
+## Labels and lists
+
+PP-DocLayout-V3 has 25 classes. Its HuggingFace `config.json` merges five of them
+(`header_image` and `footer_image` into "header"/"footer", `display_formula` and
+`inline_formula` into "formula", `vertical_text` into "text"), so the plugin maps the model's
+own class list by class id. Inline formulas stay part of their text line, logos in page
+headers and footers are page furniture, and bibliography entries (`reference_content`)
+become list items; the block around them is dropped so docling keeps the entries.
+
+The model has no list-item class. Without help, docling builds no lists from its layout:
+bullet points come out as separate paragraphs starting with "·". `list_detection` restores them:
+
+- `rules` (default): after OCR, when the text of every region is known, text regions whose
+  lines start with a list marker become list items, and a region holding several items is
+  split. Markers are bullet glyphs (including Symbol/Wingdings bullets from Word documents),
+  enumerators that form a sequence (`1.`/`2.`, `a)`/`b)`, `(i)`/`(ii)`; a lone `12. März`
+  stays text) and small isolated marks left of a line where OCR read nothing (bullets that
+  OCR drops on scans or that the PDF draws as shapes). A one-column table whose lines all
+  start with a bullet becomes a list. Table-of-contents lines, paragraph numbers such as
+  `(1)` and EU amendment markers such as `►M3` are not list markers. No extra model; the
+  time cost is negligible.
+- `heron`: additionally runs docling's own layout model (Heron) next to PP-DocLayout-V3 and
+  adopts its list-item boxes inside PP text regions; list items whose enumerator has no
+  neighbour are turned back into text. Better on scans where OCR garbles the markers, about
+  5-30 % slower (a second layout model).
+- `off`: no list detection (bibliography entries still become list items; that is the label mapping).
+
+On a benchmark with exact ground truth (list pages born-digital and scanned, traps such as
+numbered headings, dates and amounts) and 14 real documents:
+
+| | born-digital recall / precision | scanned recall / precision | false list items from traps |
+|---|---|---|---|
+| Heron (docling default layout) | 0.67 / 0.96 | 0.97 / 0.95 | 2 |
+| PP-DocLayout-V3, `off` | 0 | 0 | 0 |
+| PP-DocLayout-V3, `rules` | 1.00 / 1.00 | 0.86 / 1.00 | 0 |
+| PP-DocLayout-V3, `heron` | 1.00 / 1.00 | 0.94 / 0.94 | 1 |
+
+List detection runs after OCR, where docling has no plugin interface: the plugin wraps
+`LayoutPostprocessor.postprocess` for the pages it laid out (docling >= 2.116). The wrapper
+never breaks a conversion; if docling's internals change or detection fails, it logs a
+warning and keeps docling's regions (lists then stay plain text).
 
 ## Development
 

@@ -21,7 +21,9 @@ from docling.utils.profiling import TimeRecorder
 from docling_core.types.doc import DocItemLabel
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
-from docling_pp_doc_layout.label_mapping import LABEL_MAP
+from docling_pp_doc_layout import postprocess_hook
+from docling_pp_doc_layout.label_mapping import LABEL_MAP, class_names
+from docling_pp_doc_layout.lists import adopt_heron
 from docling_pp_doc_layout.options import PPDocLayoutV3Options
 
 if TYPE_CHECKING:
@@ -41,6 +43,29 @@ logger = logging.getLogger(__name__)
 # here, before OCR, drops every region without PDF text, i.e. whole scanned pages.
 # Older docling expects the layout model to post-process itself.
 DOCLING_POSTPROCESSES_LAYOUT = hasattr(BaseLayoutModel, "requires_layout_postprocessing")
+
+
+REFERENCE_ENTRY_INSIDE = 0.8  # share of an entry inside a bibliography block for it to belong there
+MIN_REFERENCE_ENTRIES = 2
+
+
+def _drop_reference_blocks(detections: list[dict]) -> list[dict]:
+    """Drop a bibliography block that holds two or more reference entries.
+
+    PP-DocLayout-V3 returns both the block (``reference``) and its entries
+    (``reference_content``); docling would keep the larger block and lose the entries.
+    """
+    entries = [d for d in detections if d["raw"] == "reference_content"]
+
+    def holds(block: dict, entry: dict) -> bool:
+        w = max(0.0, min(block["r"], entry["r"]) - max(block["l"], entry["l"]))
+        h = max(0.0, min(block["b"], entry["b"]) - max(block["t"], entry["t"]))
+        area = max((entry["r"] - entry["l"]) * (entry["b"] - entry["t"]), 1e-6)
+        return w * h / area >= REFERENCE_ENTRY_INSIDE
+
+    return [
+        d for d in detections if d["raw"] != "reference" or sum(holds(d, e) for e in entries) < MIN_REFERENCE_ENTRIES
+    ]
 
 
 class PPDocLayoutV3Model(BaseLayoutModel):
@@ -74,6 +99,9 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         self._model.eval()
 
         self._id2label: dict[int, str] = self._model.config.id2label
+        self._heron_model: BaseLayoutModel | None = None
+        if options.list_detection != "off" and DOCLING_POSTPROCESSES_LAYOUT:
+            postprocess_hook.install()
         logger.info("PP-DocLayout-V3 model loaded successfully")
 
     @classmethod
@@ -103,6 +131,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
             threshold=self.options.confidence_threshold,
         )
 
+        names = class_names({int(k): v for k, v in self._id2label.items()})
         batch_detections: list[list[dict]] = []
         for result in results:
             detections: list[dict] = []
@@ -118,7 +147,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 polys,
                 strict=True,
             ):
-                raw_label = self._id2label.get(label_id.item(), "text")
+                label_ix = int(label_id.item())
+                raw_label = names[label_ix] if 0 <= label_ix < len(names) else "text"
                 doc_label = LABEL_MAP.get(raw_label, DocItemLabel.TEXT)
 
                 if poly is not None and len(poly) > 0:
@@ -141,10 +171,39 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                     "t": y_min,
                     "r": x_max,
                     "b": y_max,
+                    "raw": raw_label,
                 })
-            batch_detections.append(detections)
+            batch_detections.append([
+                {k: v for k, v in d.items() if k != "raw"} for d in _drop_reference_blocks(detections)
+            ])
 
         return batch_detections
+
+    def _heron_clusters(self, conv_res: ConversionResult, page: Page) -> list[Cluster]:
+        """Raw clusters of docling's own layout model (Heron) for one page, for its list items."""
+        if self._heron_model is None:
+            try:
+                from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+                from docling.models.stages.layout.layout_object_detection_model import (
+                    LayoutObjectDetectionModel,
+                )
+
+                self._heron_model = LayoutObjectDetectionModel(
+                    artifacts_path=self.artifacts_path,
+                    accelerator_options=self.accelerator_options,
+                    options=LayoutObjectDetectionOptions(),
+                )
+            except ImportError:  # docling before LayoutObjectDetectionModel
+                from docling.datamodel.pipeline_options import LayoutOptions
+                from docling.models.stages.layout.layout_model import LayoutModel
+
+                self._heron_model = LayoutModel(
+                    artifacts_path=self.artifacts_path,
+                    accelerator_options=self.accelerator_options,
+                    options=LayoutOptions(),
+                )
+        predictions = list(self._heron_model.predict_layout(conv_res, [page]))
+        return list(predictions[0].clusters) if predictions else []
 
     @staticmethod
     def _extract_valid_pages(
@@ -217,6 +276,10 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 clusters.append(cluster)
 
             if DOCLING_POSTPROCESSES_LAYOUT:
+                if self.options.list_detection == "heron":
+                    clusters = adopt_heron(clusters, self._heron_clusters(conv_res, page))
+                if self.options.list_detection != "off":
+                    postprocess_hook.register(page, id(conv_res), veto=self.options.list_detection == "heron")
                 layout_predictions.append(LayoutPrediction(clusters=clusters))
                 continue
 

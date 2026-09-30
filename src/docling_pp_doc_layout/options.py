@@ -49,6 +49,10 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
             Falls back to the ``PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS`` env var.
         skip_cell_assignment: Skip table-cell assignment during layout analysis.
             Falls back to the ``PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT`` env var.
+        list_detection: How list items are found, since PP-DocLayout-V3 has no list class:
+            ``"rules"`` (list markers and bullet marks after OCR, default), ``"heron"``
+            (additionally docling's Heron layout model, better on scans, slower) or ``"off"``.
+            Falls back to the ``PP_DOC_LAYOUT_LIST_DETECTION`` env var.
     """
 
     kind: ClassVar[Literal["ppdoclayout-v3"]] = "ppdoclayout-v3"
@@ -79,6 +83,16 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
             description="Batch size for layout inference.",
         ),
     ] = Field(default_factory=lambda: int(os.environ.get("PP_DOC_LAYOUT_BATCH_SIZE", "8")))
+
+    list_detection: Annotated[
+        Literal["off", "rules", "heron"],
+        Field(
+            description=(
+                "List-item detection, as PP-DocLayout-V3 has no list class: 'rules' (list markers and bullet "
+                "marks after OCR), 'heron' (also docling's Heron layout model; better on scans, slower) or 'off'."
+            )
+        ),
+    ] = Field(default_factory=lambda: os.environ.get("PP_DOC_LAYOUT_LIST_DETECTION", "rules").strip().lower())
 
     # Override inherited boolean fields to add environment-variable support.
     create_orphan_clusters: Annotated[

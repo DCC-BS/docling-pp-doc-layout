@@ -30,15 +30,19 @@ uv run pytest tests/test_model.py::test_function_name
 
 ## Architecture
 
-The plugin has four core modules under `src/docling_pp_doc_layout/`:
+The plugin has these modules under `src/docling_pp_doc_layout/`:
 
 - **`plugin.py`** — Entry point. Exposes `layout_engines()` which returns a dict mapping the engine name to `PPDocLayoutV3Model`. Docling discovers plugins via this function.
 
-- **`options.py`** — `PPDocLayoutV3Options` (Pydantic model). Configures the model name, confidence threshold (0.0–1.0, default 0.3), and inherits cluster options from Docling. `kind = "ppdoclayout-v3"` identifies this engine type.
+- **`options.py`** — `PPDocLayoutV3Options` (Pydantic model). Configures the model name, confidence threshold (0.0–1.0, default 0.3), list detection (`rules`/`heron`/`off`), and inherits cluster options from Docling. `kind = "ppdoclayout-v3"` identifies this engine type.
 
 - **`model.py`** — `PPDocLayoutV3Model`, the core detection class. Inherits from `BaseLayoutModel`. Key flow: `predict_layout()` extracts PIL images from pages → `_run_inference()` runs HuggingFace transformers batch inference → maps raw labels via `label_mapping.py` → returns `LayoutPrediction` objects to Docling. With docling >= 2.116 (`DOCLING_POSTPROCESSES_LAYOUT`) the clusters are returned raw, because docling runs `LayoutPostprocessor` as its own stage after OCR; post-processing them here dropped every region without PDF text (whole scanned pages). Only older docling gets the in-model `LayoutPostprocessor` call.
 
-- **`label_mapping.py`** — Maps 21 raw PP-DocLayout-V3 class names to `DocItemLabel` values. **Critical constraint:** every label mapped here must exist in `LayoutPostprocessor.CONFIDENCE_THRESHOLDS`. The test suite enforces this.
+- **`label_mapping.py`** — Maps the 25 PP-DocLayout-V3 classes to `DocItemLabel` values. The HuggingFace `config.json` merges five class names; `class_names()` restores the model's own list so the model maps by class id. **Critical constraint:** every label mapped here must exist in `LayoutPostprocessor.CONFIDENCE_THRESHOLDS`. The test suite enforces this.
+
+- **`lists.py`** — List detection (the model has no list class): `relabel()` turns text regions whose lines start with bullets, sequenced enumerators or isolated ink marks into list items (splitting multi-item regions), converts bullet-only tables, and vetoes unsequenced Heron list items; `adopt_heron()` takes Heron's list-item boxes for `list_detection="heron"`.
+
+- **`postprocess_hook.py`** — Runs `relabel()` after OCR by wrapping `LayoutPostprocessor.postprocess` (docling has no post-OCR plugin interface). Only pages registered by `PPDocLayoutV3Model.predict_layout()` are touched; failures log a warning and keep docling's clusters.
 
 ## Testing Notes
 
