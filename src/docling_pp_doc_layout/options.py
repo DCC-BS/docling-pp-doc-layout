@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, ClassVar, Literal, get_args
 
 from docling.datamodel.pipeline_options import (
     BaseLayoutOptions,
     BaseLayoutPostprocessorOptions,
 )
 from pydantic import ConfigDict, Field
+
+ListDetection = Literal["off", "rules", "heron"]
 
 
 def _parse_bool(value: str) -> bool:
@@ -23,6 +25,20 @@ def _parse_bool(value: str) -> bool:
         ``True`` if *value* is a recognised truthy string, ``False`` otherwise.
     """
     return value.lower() in ("true", "1", "yes")
+
+
+def _list_detection_from_env() -> ListDetection:
+    """Read ``PP_DOC_LAYOUT_LIST_DETECTION`` (default ``"rules"``), case-insensitive.
+
+    Raises:
+        ValueError: If the variable holds anything other than ``off``, ``rules`` or ``heron``.
+    """
+    value = os.environ.get("PP_DOC_LAYOUT_LIST_DETECTION", "rules").strip().lower()
+    for mode in get_args(ListDetection):
+        if value == mode:
+            return mode
+    msg = f"Invalid list_detection {value!r} in PP_DOC_LAYOUT_LIST_DETECTION; expected one of {get_args(ListDetection)}"
+    raise ValueError(msg)
 
 
 class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
@@ -85,14 +101,14 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
     ] = Field(default_factory=lambda: int(os.environ.get("PP_DOC_LAYOUT_BATCH_SIZE", "8")))
 
     list_detection: Annotated[
-        Literal["off", "rules", "heron"],
+        ListDetection,
         Field(
             description=(
                 "List-item detection, as PP-DocLayout-V3 has no list class: 'rules' (list markers and bullet "
                 "marks after OCR), 'heron' (also docling's Heron layout model; better on scans, slower) or 'off'."
             )
         ),
-    ] = Field(default_factory=lambda: os.environ.get("PP_DOC_LAYOUT_LIST_DETECTION", "rules").strip().lower())
+    ] = Field(default_factory=_list_detection_from_env)
 
     # Override inherited boolean fields to add environment-variable support.
     create_orphan_clusters: Annotated[

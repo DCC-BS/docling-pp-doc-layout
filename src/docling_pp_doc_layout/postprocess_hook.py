@@ -113,7 +113,8 @@ def install() -> bool:
         if _installed:
             return True
         try:
-            from docling.utils.layout_postprocessor import LayoutPostprocessor
+            # Lazy on purpose: docling's internals may not have it; install() then reports False.
+            from docling.utils.layout_postprocessor import LayoutPostprocessor  # noqa: PLC0415
 
             original = LayoutPostprocessor.postprocess
         except (ImportError, AttributeError):

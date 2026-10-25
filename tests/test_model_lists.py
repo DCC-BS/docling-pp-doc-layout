@@ -173,3 +173,8 @@ class TestOption:
     def test_invalid(self):
         with pytest.raises(ValueError, match="list_detection"):
             PPDocLayoutV3Options(list_detection="maybe")
+
+    def test_invalid_env(self, monkeypatch):
+        monkeypatch.setenv("PP_DOC_LAYOUT_LIST_DETECTION", "maybe")
+        with pytest.raises(ValueError, match="list_detection"):
+            PPDocLayoutV3Options()
