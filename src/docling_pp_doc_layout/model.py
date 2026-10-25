@@ -182,9 +182,10 @@ class PPDocLayoutV3Model(BaseLayoutModel):
     def _heron_clusters(self, conv_res: ConversionResult, page: Page) -> list[Cluster]:
         """Raw clusters of docling's own layout model (Heron) for one page, for its list items."""
         if self._heron_model is None:
+            # Lazy imports on purpose: which layout model exists depends on the installed docling version.
             try:
-                from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
-                from docling.models.stages.layout.layout_object_detection_model import (
+                from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions  # noqa: PLC0415
+                from docling.models.stages.layout.layout_object_detection_model import (  # noqa: PLC0415
                     LayoutObjectDetectionModel,
                 )
 
@@ -194,8 +195,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                     options=LayoutObjectDetectionOptions(),
                 )
             except ImportError:  # docling before LayoutObjectDetectionModel
-                from docling.datamodel.pipeline_options import LayoutOptions
-                from docling.models.stages.layout.layout_model import LayoutModel
+                from docling.datamodel.pipeline_options import LayoutOptions  # noqa: PLC0415
+                from docling.models.stages.layout.layout_model import LayoutModel  # noqa: PLC0415
 
                 self._heron_model = LayoutModel(
                     artifacts_path=self.artifacts_path,
