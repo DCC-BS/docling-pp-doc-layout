@@ -8,6 +8,7 @@ that docling merges with its standard-pipeline output.
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
 from typing import TYPE_CHECKING
 
@@ -68,6 +69,15 @@ def _drop_reference_blocks(detections: list[dict]) -> list[dict]:
     ]
 
 
+def _doc_key(conv_res: ConversionResult) -> tuple[str, int]:
+    """Key of a conversion for list detection's enumerator sequences across its pages.
+
+    ``id(conv_res)`` alone is reused once a conversion is freed, so the next document could
+    inherit the previous one's sequences; the document hash tells them apart.
+    """
+    return str(getattr(conv_res.input, "document_hash", "")), id(conv_res)
+
+
 class PPDocLayoutV3Model(BaseLayoutModel):
     """Layout engine using PP-DocLayout-V3 via HuggingFace transformers."""
 
@@ -100,6 +110,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
         self._id2label: dict[int, str] = self._model.config.id2label
         self._heron_model: BaseLayoutModel | None = None
+        self._heron_lock = threading.Lock()
         if options.list_detection != "off" and DOCLING_POSTPROCESSES_LAYOUT:
             postprocess_hook.install()
         logger.info("PP-DocLayout-V3 model loaded successfully")
@@ -181,29 +192,34 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
     def _heron_clusters(self, conv_res: ConversionResult, page: Page) -> list[Cluster]:
         """Raw clusters of docling's own layout model (Heron) for one page, for its list items."""
-        if self._heron_model is None:
-            try:
-                from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
-                from docling.models.stages.layout.layout_object_detection_model import (
-                    LayoutObjectDetectionModel,
-                )
-
-                self._heron_model = LayoutObjectDetectionModel(
-                    artifacts_path=self.artifacts_path,
-                    accelerator_options=self.accelerator_options,
-                    options=LayoutObjectDetectionOptions(),
-                )
-            except ImportError:  # docling before LayoutObjectDetectionModel
-                from docling.datamodel.pipeline_options import LayoutOptions
-                from docling.models.stages.layout.layout_model import LayoutModel
-
-                self._heron_model = LayoutModel(
-                    artifacts_path=self.artifacts_path,
-                    accelerator_options=self.accelerator_options,
-                    options=LayoutOptions(),
-                )
+        with self._heron_lock:  # pages of concurrent conversions must not each build a model
+            if self._heron_model is None:
+                self._heron_model = self._load_heron()
         predictions = list(self._heron_model.predict_layout(conv_res, [page]))
         return list(predictions[0].clusters) if predictions else []
+
+    def _load_heron(self) -> BaseLayoutModel:
+        """Docling's own layout model (Heron), created on first use."""
+        try:
+            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+            from docling.models.stages.layout.layout_object_detection_model import (
+                LayoutObjectDetectionModel,
+            )
+
+            return LayoutObjectDetectionModel(
+                artifacts_path=self.artifacts_path,
+                accelerator_options=self.accelerator_options,
+                options=LayoutObjectDetectionOptions(),
+            )
+        except ImportError:  # docling before LayoutObjectDetectionModel
+            from docling.datamodel.pipeline_options import LayoutOptions
+            from docling.models.stages.layout.layout_model import LayoutModel
+
+            return LayoutModel(
+                artifacts_path=self.artifacts_path,
+                accelerator_options=self.accelerator_options,
+                options=LayoutOptions(),
+            )
 
     @staticmethod
     def _extract_valid_pages(
@@ -279,7 +295,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 if self.options.list_detection == "heron":
                     clusters = adopt_heron(clusters, self._heron_clusters(conv_res, page))
                 if self.options.list_detection != "off":
-                    postprocess_hook.register(page, id(conv_res), veto=self.options.list_detection == "heron")
+                    postprocess_hook.register(page, _doc_key(conv_res), veto=self.options.list_detection == "heron")
                 layout_predictions.append(LayoutPrediction(clusters=clusters))
                 continue
 

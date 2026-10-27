@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,6 +33,7 @@ def make_model(list_detection: str = "rules") -> PPDocLayoutV3Model:
     instance._model = MagicMock()
     instance._id2label = dict(enumerate(HF_CONFIG_NAMES))
     instance._heron_model = None
+    instance._heron_lock = threading.Lock()
     instance.artifacts_path = None
     instance.accelerator_options = MagicMock()
     return instance
@@ -106,6 +110,19 @@ class TestRegistration:
         run_predict(instance)
         assert calls == [veto]
 
+    def test_document_key_names_the_document(self, monkeypatch):
+        # id(conv_res) alone is reused once a conversion is freed: the next document would
+        # inherit the previous one's enumerator sequences
+        keys = []
+        monkeypatch.setattr(model_module.postprocess_hook, "register", lambda p, key, veto: keys.append(key))
+        instance = make_model("rules")
+        for doc_hash in ("aaa", "bbb"):
+            conv_res = MagicMock()
+            conv_res.input.document_hash = doc_hash
+            run_predict(instance, conv_res)
+        assert keys[0] != keys[1]
+        assert [key[0] for key in keys] == ["aaa", "bbb"]
+
     def test_off_registers_nothing(self, monkeypatch):
         monkeypatch.setattr(model_module.postprocess_hook, "register", lambda *a, **k: pytest.fail("registered"))
         run_predict(make_model("off"))
@@ -140,6 +157,26 @@ class TestHeronAssist:
         page = page_mock()
         assert instance._heron_clusters(MagicMock(), page) == []
         assert instance._heron_clusters(MagicMock(), page) == []
+        assert len(created) == 1
+
+    def test_heron_model_created_once_under_concurrency(self, monkeypatch):
+        instance = make_model("heron")
+        created = []
+
+        class SlowHeron:
+            def __init__(self, **kwargs):
+                created.append(kwargs)
+                time.sleep(0.05)
+
+            def predict_layout(self, conv_res, pages):
+                return [MagicMock(clusters=[])]
+
+        monkeypatch.setattr(
+            "docling.models.stages.layout.layout_object_detection_model.LayoutObjectDetectionModel", SlowHeron
+        )
+        page = page_mock()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda _: instance._heron_clusters(MagicMock(), page), range(4)))
         assert len(created) == 1
 
 
