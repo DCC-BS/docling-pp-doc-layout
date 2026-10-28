@@ -200,9 +200,10 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
     def _load_heron(self) -> BaseLayoutModel:
         """Docling's own layout model (Heron), created on first use."""
+        # Lazy imports on purpose: which layout model exists depends on the installed docling version.
         try:
-            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
-            from docling.models.stages.layout.layout_object_detection_model import (
+            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions  # noqa: PLC0415
+            from docling.models.stages.layout.layout_object_detection_model import (  # noqa: PLC0415
                 LayoutObjectDetectionModel,
             )
 
@@ -212,8 +213,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 options=LayoutObjectDetectionOptions(),
             )
         except ImportError:  # docling before LayoutObjectDetectionModel
-            from docling.datamodel.pipeline_options import LayoutOptions
-            from docling.models.stages.layout.layout_model import LayoutModel
+            from docling.datamodel.pipeline_options import LayoutOptions  # noqa: PLC0415
+            from docling.models.stages.layout.layout_model import LayoutModel  # noqa: PLC0415
 
             return LayoutModel(
                 artifacts_path=self.artifacts_path,
