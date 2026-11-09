@@ -17,15 +17,13 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
-from docling_pp_doc_layout.lists import relabel, to_top_left
+from docling_pp_doc_layout.lists import InkPage, relabel, to_top_left
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Hashable
 
     from docling.datamodel.base_models import Cluster, Page
     from docling.utils.layout_postprocessor import LayoutPostprocessor
-    from docling_core.types.doc.page import TextCell
-    from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +60,19 @@ def _warn_once(message: str, *args: object, exc_info: bool = False) -> None:
         logger.warning(message, *args, exc_info=exc_info)
 
 
-def _ink_source(page: Page) -> tuple[Image.Image, float, list[TextCell]] | None:
-    """The page image at twice the layout scale and the page's text cells, for ink marks."""
-    image = page.get_image(scale=2.0)
-    if image is None or page.size is None:
+def _ink_source(page: Page) -> InkPage | None:
+    """The page's text cells and, loaded only when a line could have an ink mark, its image at twice the layout scale.
+
+    The preview is the image at scale 1, which docling's page preprocessing has already rendered.
+    """
+    if page.size is None:
         return None
-    return image, 2.0, to_top_left(list(page.cells or []), page.size.height)
+    return InkPage(
+        cells=to_top_left(list(page.cells or []), page.size.height),
+        image=lambda: page.get_image(scale=2.0),
+        scale=2.0,
+        preview=lambda: (page.get_image(scale=1.0), 1.0),
+    )
 
 
 def _detect_lists(processor: LayoutPostprocessor, clusters: list[Cluster]) -> list[Cluster]:
