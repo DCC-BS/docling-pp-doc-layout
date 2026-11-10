@@ -39,6 +39,6 @@ class ListSpatialIndex:
 
 
 def install() -> None:
-    from docling.utils import layout_postprocessor
+    from docling.utils import layout_postprocessor  # noqa: PLC0415
 
     layout_postprocessor.BoundingBoxSpatialIndex = ListSpatialIndex  # ty: ignore[invalid-assignment]
