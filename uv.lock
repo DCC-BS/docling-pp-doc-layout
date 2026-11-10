@@ -498,6 +498,7 @@ source = { editable = "." }
 dependencies = [
     { name = "docling" },
     { name = "torch" },
+    { name = "torchvision" },
     { name = "transformers" },
 ]
 
@@ -514,6 +515,7 @@ dev = [
 requires-dist = [
     { name = "docling", specifier = ">=2.73" },
     { name = "torch" },
+    { name = "torchvision" },
     { name = "transformers", specifier = ">=5.1.0" },
 ]
 

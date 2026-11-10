@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -20,9 +20,11 @@ from docling.utils.accelerator_utils import decide_device
 from docling.utils.layout_postprocessor import LayoutPostprocessor
 from docling.utils.profiling import TimeRecorder
 from docling_core.types.doc import DocItemLabel
+from PIL import Image
+from torchvision.transforms.v2 import functional as tvF  # noqa: N812
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
-from docling_pp_doc_layout import postprocess_hook
+from docling_pp_doc_layout import _index, _resize, postprocess_hook
 from docling_pp_doc_layout.label_mapping import LABEL_MAP, class_names
 from docling_pp_doc_layout.lists import adopt_heron
 from docling_pp_doc_layout.options import PPDocLayoutV3Options
@@ -109,10 +111,14 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         self._model.eval()
 
         self._id2label: dict[int, str] = self._model.config.id2label
+        self._names = class_names({int(k): v for k, v in self._id2label.items()})
+        self._std255 = torch.tensor(1.0 / self._image_processor.rescale_factor, dtype=torch.float32).to(self._device)
         self._heron_model: BaseLayoutModel | None = None
         self._heron_lock = threading.Lock()
         if options.list_detection != "off" and DOCLING_POSTPROCESSES_LAYOUT:
             postprocess_hook.install()
+        if options.fast_paths:
+            _index.install()
         logger.info("PP-DocLayout-V3 model loaded successfully")
 
     @classmethod
@@ -129,13 +135,21 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         Returns a list (per image) of lists of detection dicts with keys
         ``label``, ``confidence``, ``l``, ``t``, ``r``, ``b``.
         """
-        inputs = self._image_processor(images=images, return_tensors="pt")
-        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+        fast = self._fast_paths_apply()
+        pixel_values = self._fast_pixel_values(images) if fast else None
+        if pixel_values is not None:
+            inputs = {"pixel_values": pixel_values}
+        else:
+            inputs = self._image_processor(images=images, return_tensors="pt")
+            inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self._model(**inputs)
 
         target_sizes = [img.size[::-1] for img in images]  # (height, width)
+        if fast and isinstance(getattr(outputs, "pred_boxes", None), torch.Tensor):
+            results = self._post_process_fast(outputs, target_sizes, self.options.confidence_threshold)
+            return [self._detections_fast(result) for result in results]
         results = self._image_processor.post_process_object_detection(
             outputs,
             target_sizes=target_sizes,
@@ -190,6 +204,116 @@ class PPDocLayoutV3Model(BaseLayoutModel):
 
         return batch_detections
 
+    def _fast_paths_apply(self) -> bool:
+        """Whether ``fast_paths`` is on and the image processor has the PP-DocLayout-V3 helpers the fast paths reuse."""
+        proc_type = type(self._image_processor)
+        return self.options.fast_paths and all(
+            callable(getattr(proc_type, name, None)) for name in ("_get_order_seqs", "_extract_polygon_points_by_masks")
+        )
+
+    def _fast_pixel_values(self, images: list[Image.Image]) -> torch.Tensor | None:
+        """The HF processor's pixel values without its per-call overhead (``fast_paths``).
+
+        Same math as ``PPDocLayoutV3ImageProcessor``: torchvision's CPU uint8 bicubic resize
+        (antialias off) to 800x800, then float32 / 255 -- the division runs on the GPU, on the
+        uint8 tensor (4x less to copy than float32). On CUDA the resize itself runs on the GPU when
+        :func:`_resize.exact_on_gpu` confirms, once per page size, that it gives the CPU kernel's pixels.
+        None for images the fast path does not cover.
+        """
+        size = self._image_processor.size
+        if (
+            not getattr(self._image_processor, "do_resize", False)
+            or any(img.mode != "RGB" for img in images)
+            or list(self._image_processor.image_mean) != [0, 0, 0]
+            or list(self._image_processor.image_std) != [1, 1, 1]
+        ):
+            return None
+        out_hw = [size["height"], size["width"]]
+        if self._device.startswith("cuda"):
+            hwcs = [torch.from_numpy(np.asarray(img)) for img in images]
+            if all(_resize.exact_on_gpu(c.permute(2, 0, 1), out_hw[0], out_hw[1], self._device) for c in hwcs):
+                # upload the uint8 page as is (HWC), resize on the GPU
+                batch = torch.stack([
+                    _resize.resize(c.pin_memory().to(self._device, non_blocking=True).permute(2, 0, 1), *out_hw)
+                    for c in hwcs
+                ])  # fmt: skip
+                return batch.to(torch.float32).div_(self._std255)
+        resized = []
+        for img in images:
+            chw = torch.from_numpy(np.asarray(img)).permute(2, 0, 1)  # channels-last view, no copy
+            resized.append(tvF.resize(chw.unsqueeze(0), out_hw, interpolation=tvF.InterpolationMode.BICUBIC,
+                                      antialias=False)[0])  # fmt: skip
+        batch = torch.stack(resized).contiguous()
+        if self._device.startswith("cuda"):
+            batch = batch.pin_memory().to(self._device, non_blocking=True)
+        else:
+            batch = batch.to(self._device)
+        # HF: rescale fused into normalize with mean 0 and std 1/rescale_factor = 255.0 (float32)
+        return batch.to(torch.float32).div_(self._std255)
+
+    def _post_process_fast(self, outputs: Any, target_sizes: list[tuple[int, int]], threshold: float) -> list[dict]:  # noqa: ANN401
+        """``post_process_object_detection`` with the same math, kept detections only.
+
+        HF gathers, sigmoids and thresholds the masks of all 300 queries per image (300x200x200
+        floats each) and then keeps the few above the threshold; here the kept queries are chosen
+        first and only their masks are processed, and each image needs one host copy.
+        """
+        proc = self._image_processor
+        boxes, logits, masks = outputs.pred_boxes, outputs.logits, outputs.out_masks
+        order_seqs = proc._get_order_seqs(outputs.order_logits)  # noqa: SLF001
+        box_centers, box_dims = torch.split(boxes, 2, dim=-1)
+        boxes = torch.cat([box_centers - 0.5 * box_dims, box_centers + 0.5 * box_dims], dim=-1)
+        img_height, img_width = torch.as_tensor(target_sizes).unbind(1)
+        scale_factor = torch.stack([img_width, img_height, img_width, img_height], dim=1).to(boxes.device)
+        boxes = boxes * scale_factor[:, None, :]
+        num_top_queries, num_classes = logits.shape[1], logits.shape[2]
+        scores, index = torch.topk(torch.nn.functional.sigmoid(logits).flatten(1), num_top_queries, dim=-1)
+        labels = index % num_classes
+        index = index // num_classes
+        boxes = boxes.gather(dim=1, index=index.unsqueeze(-1).repeat(1, 1, boxes.shape[-1]))
+        order_seqs = order_seqs.gather(dim=1, index=index)
+        results = []
+        for b, target_size in enumerate(target_sizes):
+            keep = scores[b] >= threshold
+            order_seq, indices = torch.sort(order_seqs[b][keep])
+            queries = index[b][keep][indices]
+            mask = (masks[b, queries].sigmoid() > threshold).int()
+            box = boxes[b][keep][indices]
+            box_np, mask_np = box.cpu().numpy(), mask.cpu().numpy()
+            results.append({
+                "scores": scores[b][keep][indices],
+                "labels": labels[b][keep][indices],
+                "boxes": box,
+                "polygon_points": proc._extract_polygon_points_by_masks(  # noqa: SLF001
+                    box_np, mask_np, [proc.size["width"] / target_size[1], proc.size["height"] / target_size[0]]
+                ),
+                "order_seq": order_seq,
+            })
+        return results
+
+    def _detections_fast(self, result: dict) -> list[dict]:
+        """The detections of one image with one host copy instead of one per value."""
+        names = self._names
+        scores = result["scores"].tolist()
+        labels = result["labels"].tolist()
+        boxes = result["boxes"].tolist()
+        polys = result.get("polygons") or result.get("polygon_points") or [None] * len(scores)
+        detections: list[dict] = []
+        for score, label_ix, box, poly in zip(scores, labels, boxes, polys, strict=True):
+            raw_label = names[label_ix] if 0 <= label_ix < len(names) else "text"
+            if poly is not None and len(poly) > 0:
+                if isinstance(poly[0], int | float):
+                    xs, ys = poly[0::2], poly[1::2]
+                else:
+                    xs = [pt[0] for pt in poly]
+                    ys = [pt[1] for pt in poly]
+                x_min, x_max, y_min, y_max = min(xs), max(xs), min(ys), max(ys)
+            else:
+                x_min, y_min, x_max, y_max = box
+            detections.append({"label": LABEL_MAP.get(raw_label, DocItemLabel.TEXT), "confidence": score,
+                               "l": x_min, "t": y_min, "r": x_max, "b": y_max, "raw": raw_label})  # fmt: skip
+        return [{k: v for k, v in d.items() if k != "raw"} for d in _drop_reference_blocks(detections)]
+
     def _heron_clusters(self, conv_res: ConversionResult, page: Page) -> list[Cluster]:
         """Raw clusters of docling's own layout model (Heron) for one page, for its list items."""
         with self._heron_lock:  # pages of concurrent conversions must not each build a model
@@ -202,8 +326,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         """Docling's own layout model (Heron), created on first use."""
         # Lazy imports on purpose: which layout model exists depends on the installed docling version.
         try:
-            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions  # noqa: PLC0415
-            from docling.models.stages.layout.layout_object_detection_model import (  # noqa: PLC0415
+            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+            from docling.models.stages.layout.layout_object_detection_model import (
                 LayoutObjectDetectionModel,
             )
 
@@ -213,8 +337,8 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 options=LayoutObjectDetectionOptions(),
             )
         except ImportError:  # docling before LayoutObjectDetectionModel
-            from docling.datamodel.pipeline_options import LayoutOptions  # noqa: PLC0415
-            from docling.models.stages.layout.layout_model import LayoutModel  # noqa: PLC0415
+            from docling.datamodel.pipeline_options import LayoutOptions
+            from docling.models.stages.layout.layout_model import LayoutModel
 
             return LayoutModel(
                 artifacts_path=self.artifacts_path,

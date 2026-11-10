@@ -24,6 +24,7 @@ dependencies = [
     "docling>=2.73",
     "transformers>=5.1.0",
     "torch",
+    "torchvision",
 ]
 
 [project.urls]

@@ -42,6 +42,8 @@ The plugin has these modules under `src/docling_pp_doc_layout/`:
 
 - **`lists.py`** — List detection (the model has no list class): `relabel()` turns text regions whose lines start with bullets, sequenced enumerators or isolated ink marks into list items (splitting multi-item regions), converts bullet-only tables, and vetoes unsequenced Heron list items; `adopt_heron()` takes Heron's list-item boxes for `list_detection="heron"`.
 
+- **`_resize.py`, `_index.py`** — The `fast_paths` option (default on, same output): `_resize` ports torchvision's CPU uint8 bicubic resize bit for bit to the GPU (checked once per page size against the CPU kernel, CPU fallback on any difference); `_index` replaces the R-trees in docling's `LayoutPostprocessor` with a list scan using the same inclusive intersection test. `model.py` also post-processes only the kept detections.
+
 - **`postprocess_hook.py`** — Runs `relabel()` after OCR by wrapping `LayoutPostprocessor.postprocess` (docling has no post-OCR plugin interface). Only pages registered by `PPDocLayoutV3Model.predict_layout()` are touched; failures log a warning and keep docling's clusters.
 
 ## Testing Notes

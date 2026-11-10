@@ -112,6 +112,7 @@ constructor arguments always take precedence over environment variables.
 | `PP_DOC_LAYOUT_KEEP_EMPTY_CLUSTERS` | Retain empty clusters in results (`true`/`false`) | `false` |
 | `PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT` | Skip table-cell assignment (`true`/`false`) | `false` |
 | `PP_DOC_LAYOUT_LIST_DETECTION` | List-item detection: `rules`, `heron` or `off` (see below) | `rules` |
+| `PP_DOC_LAYOUT_FAST_PATHS` | Page resize on the GPU, post-processing of kept detections only, list scan instead of R-trees in docling's layout post-processor; same output (`true`/`false`) | `true` |
 
 Boolean variables accept `true`, `1`, `yes` (case-insensitive) as truthy values; any other value is treated as `false`.
 
