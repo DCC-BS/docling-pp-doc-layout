@@ -119,7 +119,6 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         self._model.eval()
 
         self._id2label: dict[int, str] = self._model.config.id2label
-        self._std255 = torch.tensor(1.0 / self._image_processor.rescale_factor, dtype=torch.float32).to(self._device)
         self._heron_model: BaseLayoutModel | None = None
         self._heron_lock = threading.Lock()
         if options.list_detection != "off" and DOCLING_POSTPROCESSES_LAYOUT:
@@ -133,6 +132,11 @@ class PPDocLayoutV3Model(BaseLayoutModel):
             postprocess_hook.register(page, _doc_key(conv_res), veto=self.options.list_detection == "heron")
         if getattr(self, "_list_index", False):
             _index.register(page)
+
+    @functools.cached_property
+    def _std255(self) -> torch.Tensor:
+        """HF's normalisation divisor (std 1/rescale_factor = 255.0) as a 0-dim float32 tensor on the model's device."""
+        return torch.tensor(1.0 / self._image_processor.rescale_factor, dtype=torch.float32).to(self._device)
 
     @functools.cached_property
     def _names(self) -> list[str]:

@@ -73,7 +73,6 @@ def _model(processor: PPDocLayoutV3ImageProcessor, *, fast: bool) -> PPDocLayout
     model._image_processor = processor
     model._id2label = dict(enumerate(["text", "table", "image", "doc_title", "reference"]))
     model._names = [model._id2label[i] for i in range(5)]
-    model._std255 = torch.tensor(1.0 / processor.rescale_factor, dtype=torch.float32)
     return model
 
 
