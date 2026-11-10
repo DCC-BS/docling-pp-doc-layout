@@ -5,12 +5,14 @@ On the CPU that runs PyTorch's integer kernel (UpSampleKernelAVXAntialias.h, fro
 pixel four taps with float bicubic weights (a = -0.75), taps beyond the border clamped to the border pixel
 and their weights summed, weights normalised and quantised to int16 with a shared precision, a horizontal
 pass then a vertical pass, each ``clamp((sum + 2^(p-1)) >> p, 0, 255)``. This module does the same integer
-math with int32 tensors on the GPU. :func:`exact_on_gpu` compares it once per size with the CPU kernel.
+math with int32 tensors on the GPU. :func:`exact_on_gpu` compares it once per size with the CPU kernel,
+on random pixels.
 """
 
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 
 import torch
 from torchvision.transforms.v2 import functional as tvF  # noqa: N812
@@ -19,8 +21,10 @@ _A = -0.75  # torch's cubic coefficient without antialias
 _SUPPORT = 2.0  # bicubic: two taps on each side
 _MAX_PRECISION = 22  # torch's cap on the weights' fixed-point bits
 _lock = threading.Lock()
-_taps: dict[tuple[int, int, str], tuple[torch.Tensor, torch.Tensor, int]] = {}
-_checked: dict[tuple[int, int, int, int], bool] = {}
+# Bounded: a server sees pages of many sizes. Least recently used sizes go first.
+_MAX_SIZES = 64
+_taps: OrderedDict[tuple[int, int, str], tuple[torch.Tensor, torch.Tensor, int]] = OrderedDict()
+_checked: OrderedDict[tuple[int, int, int, int], bool] = OrderedDict()
 
 
 def _cubic(x: float) -> float:
@@ -36,6 +40,7 @@ def _weights(in_size: int, out_size: int, device: torch.device) -> tuple[torch.T
     key = (in_size, out_size, str(device))
     with _lock:
         if key in _taps:
+            _taps.move_to_end(key)
             return _taps[key]
     scale, support, interp = in_size / out_size, _SUPPORT, 4
     rows_idx, rows_w, wmax = [], [], 0.0
@@ -63,6 +68,8 @@ def _weights(in_size: int, out_size: int, device: torch.device) -> tuple[torch.T
     entry = (torch.tensor(rows_idx, device=device), torch.tensor(q, dtype=torch.int32, device=device), prec)
     with _lock:
         _taps[key] = entry
+        while len(_taps) > 2 * _MAX_SIZES:  # one entry per axis
+            _taps.popitem(last=False)
     return entry
 
 
@@ -87,18 +94,20 @@ def resize(x: torch.Tensor, out_h: int, out_w: int) -> torch.Tensor:
 
 
 def exact_on_gpu(chw_cpu: torch.Tensor, out_h: int, out_w: int, device: torch.device | str) -> bool:
-    """Once per input size: whether :func:`resize` on ``device`` matches the CPU kernel on this image."""
+    """Once per input size: whether :func:`resize` on ``device`` matches the CPU kernel.
+
+    Compared on random pixels of the page's size (a page is mostly white and would hide differences).
+    """
     key = (int(chw_cpu.shape[-2]), int(chw_cpu.shape[-1]), out_h, out_w)
     with _lock:
         if key in _checked:
+            _checked.move_to_end(key)
             return _checked[key]
-    cpu = tvF.resize(chw_cpu.unsqueeze(0), [out_h, out_w], interpolation=tvF.InterpolationMode.BICUBIC, antialias=False)
-    # random pixels as well: a page is mostly white and would hide differences
-    noise = torch.randint(0, 256, chw_cpu.shape, dtype=torch.uint8, generator=torch.Generator().manual_seed(0))
-    cpu_n = tvF.resize(noise.unsqueeze(0), [out_h, out_w], interpolation=tvF.InterpolationMode.BICUBIC, antialias=False)
-    ok = torch.equal(resize(chw_cpu.unsqueeze(0).to(device), out_h, out_w).cpu(), cpu) and torch.equal(
-        resize(noise.unsqueeze(0).to(device), out_h, out_w).cpu(), cpu_n
-    )
+    noise = torch.randint(0, 256, tuple(chw_cpu.shape), dtype=torch.uint8, generator=torch.Generator().manual_seed(0))
+    cpu = tvF.resize(noise.unsqueeze(0), [out_h, out_w], interpolation=tvF.InterpolationMode.BICUBIC, antialias=False)
+    ok = torch.equal(resize(noise.unsqueeze(0).to(device), out_h, out_w).cpu(), cpu)
     with _lock:
         _checked[key] = ok
+        while len(_checked) > _MAX_SIZES:
+            _checked.popitem(last=False)
     return ok

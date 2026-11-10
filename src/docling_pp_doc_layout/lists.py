@@ -204,10 +204,14 @@ def _window(line: Line, boxes: Sequence[BoundingBox]) -> tuple[float, float] | N
 
 
 def _pixel_box(line: Line, x0: float, x1: float, scale: float, size: tuple[int, int]) -> tuple[int, int, int, int]:
-    """The window in pixels (left, top, right, bottom), clamped to the image like a numpy slice."""
+    """The window in pixels (left, top, right, bottom), as a numpy slice of the page selects it.
+
+    The rows and columns of ``gray[int(top * s) : int(bottom * s) + 1, int(x0 * s) : int(x1 * s) + 1]``,
+    negative indices counted from the end as numpy does (a line above the page gets an empty window).
+    """
     width, height = size
-    left, top = max(0, int(x0 * scale)), max(0, int(line.top * scale))
-    right, bottom = min(width, int(x1 * scale) + 1), min(height, int(line.bottom * scale) + 1)
+    left, right = slice(int(x0 * scale), int(x1 * scale) + 1).indices(width)[:2]
+    top, bottom = slice(int(line.top * scale), int(line.bottom * scale) + 1).indices(height)[:2]
     return left, top, max(left, right), max(top, bottom)
 
 

@@ -111,3 +111,57 @@ def test_fast_paths_give_the_processor_detections():
     assert torch.equal(results["pixels-True"], results["pixels-False"])
     assert results[True] == results[False]
     assert any(results[True])  # the random outputs keep some detections
+
+
+class TestListIndexScope:
+    """Only pages registered by a fast_paths model get the list index, and only while docling post-processes them."""
+
+    @pytest.fixture
+    def layout_postprocessor(self):
+        from docling.utils import layout_postprocessor
+
+        assert _index.install()
+        return layout_postprocessor
+
+    @staticmethod
+    def _index_used(layout_postprocessor, page) -> type:
+        seen = []
+
+        class Processor:
+            def __init__(self, page):
+                self.page = page
+
+            def postprocess(self):
+                seen.append(type(layout_postprocessor.BoundingBoxSpatialIndex()))
+
+        wrapped = _index._wrap(Processor.postprocess)
+        wrapped(Processor(page))
+        return seen[0]
+
+    def test_registered_page_gets_the_list_index_once(self, layout_postprocessor):
+        page = object()
+        _index.register(page)
+        assert self._index_used(layout_postprocessor, page) is _index.ListSpatialIndex
+        assert self._index_used(layout_postprocessor, page) is not _index.ListSpatialIndex  # taken on first use
+
+    def test_other_pages_and_other_code_keep_the_rtree(self, layout_postprocessor):
+        assert self._index_used(layout_postprocessor, object()) is not _index.ListSpatialIndex
+        assert type(layout_postprocessor.BoundingBoxSpatialIndex()) is not _index.ListSpatialIndex
+
+    def test_docling_without_the_index_is_left_alone(self, monkeypatch):
+        from docling.utils import layout_postprocessor
+
+        monkeypatch.setattr(_index, "_installed", False)
+        monkeypatch.delattr(layout_postprocessor, "BoundingBoxSpatialIndex")
+        assert not _index.install()
+
+
+def test_fast_pixel_values_only_on_cpu_and_cuda():
+    model = _model(PPDocLayoutV3ImageProcessor(), fast=True)
+    model._device = "mps"
+    assert model._fast_pixel_values([Image.new("RGB", (60, 80))]) is None
+
+
+def test_fast_pixel_values_need_the_bicubic_processor():
+    model = _model(PPDocLayoutV3ImageProcessor(resample=2), fast=True)
+    assert model._fast_pixel_values([Image.new("RGB", (60, 80))]) is None

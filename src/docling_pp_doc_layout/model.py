@@ -7,6 +7,7 @@ that docling merges with its standard-pipeline output.
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import warnings
@@ -20,9 +21,9 @@ from docling.utils.accelerator_utils import decide_device
 from docling.utils.layout_postprocessor import LayoutPostprocessor
 from docling.utils.profiling import TimeRecorder
 from docling_core.types.doc import DocItemLabel
-from PIL import Image
 from torchvision.transforms.v2 import functional as tvF  # noqa: N812
 from transformers import AutoImageProcessor, AutoModelForObjectDetection
+from transformers.image_utils import PILImageResampling
 
 from docling_pp_doc_layout import _index, _resize, postprocess_hook
 from docling_pp_doc_layout.label_mapping import LABEL_MAP, class_names
@@ -50,6 +51,13 @@ DOCLING_POSTPROCESSES_LAYOUT = hasattr(BaseLayoutModel, "requires_layout_postpro
 
 REFERENCE_ENTRY_INSIDE = 0.8  # share of an entry inside a bibliography block for it to belong there
 MIN_REFERENCE_ENTRIES = 2
+
+
+def _host(values: Any) -> list:  # noqa: ANN401 - a tensor or a list of tensors
+    """Python values of a tensor (one host copy) or of a list of tensors."""
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    return [v.tolist() if hasattr(v, "tolist") else v for v in values]
 
 
 def _drop_reference_blocks(detections: list[dict]) -> list[dict]:
@@ -111,15 +119,25 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         self._model.eval()
 
         self._id2label: dict[int, str] = self._model.config.id2label
-        self._names = class_names({int(k): v for k, v in self._id2label.items()})
         self._std255 = torch.tensor(1.0 / self._image_processor.rescale_factor, dtype=torch.float32).to(self._device)
         self._heron_model: BaseLayoutModel | None = None
         self._heron_lock = threading.Lock()
         if options.list_detection != "off" and DOCLING_POSTPROCESSES_LAYOUT:
             postprocess_hook.install()
-        if options.fast_paths:
-            _index.install()
+        self._list_index = options.fast_paths and DOCLING_POSTPROCESSES_LAYOUT and _index.install()
         logger.info("PP-DocLayout-V3 model loaded successfully")
+
+    def _register_for_postprocessing(self, page: Page, conv_res: ConversionResult) -> None:
+        """Mark the page for list detection and the list index, which run when docling post-processes it."""
+        if self.options.list_detection != "off":
+            postprocess_hook.register(page, _doc_key(conv_res), veto=self.options.list_detection == "heron")
+        if getattr(self, "_list_index", False):
+            _index.register(page)
+
+    @functools.cached_property
+    def _names(self) -> list[str]:
+        """The model's class names by class id (see ``label_mapping.class_names``)."""
+        return class_names({int(k): v for k, v in self._id2label.items()})
 
     @classmethod
     def get_options_type(cls) -> type[BaseLayoutOptions]:
@@ -156,53 +174,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
             threshold=self.options.confidence_threshold,
         )
 
-        names = class_names({int(k): v for k, v in self._id2label.items()})
-        batch_detections: list[list[dict]] = []
-        for result in results:
-            detections: list[dict] = []
-
-            polys = result.get("polygons") or result.get("polygon_points")
-            if polys is None:
-                polys = [None] * len(result["scores"])
-
-            for score, label_id, box, poly in zip(
-                result["scores"],
-                result["labels"],
-                result["boxes"],
-                polys,
-                strict=True,
-            ):
-                label_ix = int(label_id.item())
-                raw_label = names[label_ix] if 0 <= label_ix < len(names) else "text"
-                doc_label = LABEL_MAP.get(raw_label, DocItemLabel.TEXT)
-
-                if poly is not None and len(poly) > 0:
-                    # Flatten or handle nested points to extract min/max
-                    if isinstance(poly[0], int | float):
-                        xs = poly[0::2]
-                        ys = poly[1::2]
-                    else:
-                        xs = [pt[0] for pt in poly]
-                        ys = [pt[1] for pt in poly]
-                    x_min, x_max = min(xs), max(xs)
-                    y_min, y_max = min(ys), max(ys)
-                else:
-                    x_min, y_min, x_max, y_max = box.tolist()
-
-                detections.append({
-                    "label": doc_label,
-                    "confidence": score.item(),
-                    "l": x_min,
-                    "t": y_min,
-                    "r": x_max,
-                    "b": y_max,
-                    "raw": raw_label,
-                })
-            batch_detections.append([
-                {k: v for k, v in d.items() if k != "raw"} for d in _drop_reference_blocks(detections)
-            ])
-
-        return batch_detections
+        return [self._detections_fast(result) for result in results]
 
     def _fast_paths_apply(self) -> bool:
         """Whether ``fast_paths`` is on and the image processor has the PP-DocLayout-V3 helpers the fast paths reuse."""
@@ -220,17 +192,24 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         :func:`_resize.exact_on_gpu` confirms, once per page size, that it gives the CPU kernel's pixels.
         None for images the fast path does not cover.
         """
-        size = self._image_processor.size
+        proc = self._image_processor
+        size = proc.size
         if (
-            not getattr(self._image_processor, "do_resize", False)
+            not self._device.startswith(("cuda", "cpu"))  # other accelerators: float division may round differently
+            or not getattr(proc, "do_resize", False)
+            or int(getattr(proc, "resample", -1)) != int(PILImageResampling.BICUBIC)
+            or not getattr(proc, "do_rescale", False)
+            or any(getattr(proc, flag, None) for flag in ("do_pad", "do_center_crop"))
             or any(img.mode != "RGB" for img in images)
-            or list(self._image_processor.image_mean) != [0, 0, 0]
-            or list(self._image_processor.image_std) != [1, 1, 1]
+            or (
+                getattr(proc, "do_normalize", False)
+                and (list(proc.image_mean) != [0, 0, 0] or list(proc.image_std) != [1, 1, 1])
+            )
         ):
             return None
         out_hw = [size["height"], size["width"]]
         if self._device.startswith("cuda"):
-            hwcs = [torch.from_numpy(np.asarray(img)) for img in images]
+            hwcs = [torch.from_numpy(np.array(img)) for img in images]  # writable copy (no torch warning)
             if all(_resize.exact_on_gpu(c.permute(2, 0, 1), out_hw[0], out_hw[1], self._device) for c in hwcs):
                 # upload the uint8 page as is (HWC), resize on the GPU
                 batch = torch.stack([
@@ -240,7 +219,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
                 return batch.to(torch.float32).div_(self._std255)
         resized = []
         for img in images:
-            chw = torch.from_numpy(np.asarray(img)).permute(2, 0, 1)  # channels-last view, no copy
+            chw = torch.from_numpy(np.array(img)).permute(2, 0, 1)  # channels-last view of a writable copy
             resized.append(tvF.resize(chw.unsqueeze(0), out_hw, interpolation=tvF.InterpolationMode.BICUBIC,
                                       antialias=False)[0])  # fmt: skip
         batch = torch.stack(resized).contiguous()
@@ -292,11 +271,9 @@ class PPDocLayoutV3Model(BaseLayoutModel):
         return results
 
     def _detections_fast(self, result: dict) -> list[dict]:
-        """The detections of one image with one host copy instead of one per value."""
+        """The detections of one post-processed image, read with one host copy per field."""
         names = self._names
-        scores = result["scores"].tolist()
-        labels = result["labels"].tolist()
-        boxes = result["boxes"].tolist()
+        scores, labels, boxes = (_host(result[key]) for key in ("scores", "labels", "boxes"))
         polys = result.get("polygons") or result.get("polygon_points") or [None] * len(scores)
         detections: list[dict] = []
         for score, label_ix, box, poly in zip(scores, labels, boxes, polys, strict=True):
@@ -419,8 +396,7 @@ class PPDocLayoutV3Model(BaseLayoutModel):
             if DOCLING_POSTPROCESSES_LAYOUT:
                 if self.options.list_detection == "heron":
                     clusters = adopt_heron(clusters, self._heron_clusters(conv_res, page))
-                if self.options.list_detection != "off":
-                    postprocess_hook.register(page, _doc_key(conv_res), veto=self.options.list_detection == "heron")
+                self._register_for_postprocessing(page, conv_res)
                 layout_predictions.append(LayoutPrediction(clusters=clusters))
                 continue
 

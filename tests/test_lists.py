@@ -399,3 +399,12 @@ class TestLazyInk:
         clusters = [para(1, ["Budgetberatung"], left=60), para(2, ["Schuldenberatung"], top=120, left=60)]
         out = run(clusters, ink=lambda: InkPage(cells=[], image=lambda: None))
         assert [c.label for c in out] == [DocItemLabel.TEXT] * 2
+
+
+@pytest.mark.parametrize("top", [-0.4, -1.0, -1.6, -30.0])
+def test_lines_above_the_page_edge_match_the_whole_page_search(top):
+    """A line that starts above the page gets the window numpy slicing gave it (none at all, mostly)."""
+    image = Image.new("RGB", (400, 400), "white")
+    ImageDraw.Draw(image).rectangle((60, 3, 64, 7), fill="black")  # a bullet at the top edge (scale 2)
+    line = lists.Line("item", 40.0, top, 120.0, top + 6.0)
+    assert ink_marks(image, 2.0, [line], []) == reference_ink_marks(image, 2.0, [line], [])
