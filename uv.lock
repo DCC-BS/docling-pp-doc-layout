@@ -499,11 +499,12 @@ wheels = [
 
 [[package]]
 name = "docling-pp-doc-layout"
-version = "0.2.7"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "docling" },
     { name = "torch" },
+    { name = "torchvision" },
     { name = "transformers" },
 ]
 
@@ -520,6 +521,7 @@ dev = [
 requires-dist = [
     { name = "docling", specifier = ">=2.73" },
     { name = "torch" },
+    { name = "torchvision" },
     { name = "transformers", specifier = ">=5.1.0" },
 ]
 

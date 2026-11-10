@@ -69,6 +69,10 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
             ``"rules"`` (list markers and bullet marks after OCR, default), ``"heron"``
             (additionally docling's Heron layout model, better on scans, slower) or ``"off"``.
             Falls back to the ``PP_DOC_LAYOUT_LIST_DETECTION`` env var.
+        fast_paths: Resize the pages on the GPU, post-process only the kept detections and let
+            docling's layout post-processor scan a list instead of building R-trees (default on).
+            The output is the same; off runs the Hugging Face image processor and docling's R-trees.
+            Falls back to the ``PP_DOC_LAYOUT_FAST_PATHS`` env var.
     """
 
     kind: ClassVar[Literal["ppdoclayout-v3"]] = "ppdoclayout-v3"
@@ -140,5 +144,15 @@ class PPDocLayoutV3Options(BaseLayoutOptions, BaseLayoutPostprocessorOptions):
             )
         ),
     ] = Field(default_factory=lambda: _parse_bool(os.environ.get("PP_DOC_LAYOUT_SKIP_CELL_ASSIGNMENT", "false")))
+
+    fast_paths: Annotated[
+        bool,
+        Field(
+            description=(
+                "Faster pre- and post-processing with the same output (GPU resize, kept detections only, "
+                "list scan instead of R-trees). Falls back to PP_DOC_LAYOUT_FAST_PATHS env var."
+            )
+        ),
+    ] = Field(default_factory=lambda: _parse_bool(os.environ.get("PP_DOC_LAYOUT_FAST_PATHS", "true")))
 
     model_config = ConfigDict(extra="forbid")

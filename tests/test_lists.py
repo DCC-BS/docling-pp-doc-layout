@@ -13,9 +13,11 @@ from docling_pp_doc_layout import lists
 from docling_pp_doc_layout.lists import (
     BULLET,
     EnumSequences,
+    InkPage,
     adopt_heron,
     enum_keys,
     ink_marks,
+    page_ink_marks,
     relabel,
     text_lines,
     to_top_left,
@@ -277,3 +279,132 @@ def test_ink_marks_numpy_types():
     marks = ink_marks(page_with_marks([(47, 104.5), (47, 124.5)]), 2.0, lines, [])
     assert all(isinstance(float(m), float) for m in marks if m is not None)
     assert np.isfinite([m for m in marks if m is not None]).all()
+
+
+def reference_ink_marks(image, scale, lines, page_cells):
+    """ink_marks as it was before the windows were cropped: the whole page in gray, the threshold always."""
+    gray = np.asarray(image.convert("L"), dtype=np.uint8)
+    threshold = min(160, int(gray.mean()) - 40)
+    boxes = [c.rect.to_bounding_box() for c in page_cells]
+    out = []
+    for line in lines:
+        h = max(line.bottom - line.top, 4.0)
+        x0, x1 = max(0.0, line.left - 2.5 * h), line.left - 0.12 * h
+        if x1 - x0 < lists.MIN_ROOM_PT or any(
+            bb.r > x0 and bb.l < x1 and bb.b > line.top and bb.t < line.bottom for bb in boxes
+        ):
+            out.append(None)
+            continue
+        window = gray[int(line.top * scale) : int(line.bottom * scale) + 1, int(x0 * scale) : int(x1 * scale) + 1]
+        out.append(lists._ink_mark(window, threshold, scale, line, x0))
+    return out
+
+
+class TestLazyInk:
+    def test_same_marks_as_the_whole_page_version(self):
+        rng = np.random.default_rng(7)
+        found = 0
+        for _ in range(60):
+            background = int(rng.choice([255, 230, 120, 60]))  # dark pages move the threshold
+            img = Image.new("RGB", (600, 400), (background,) * 3)
+            draw = ImageDraw.Draw(img)
+            cells = [cell(f"Zeile {i}", float(rng.uniform(5, 120)), 10 + 16 * i) for i in range(10)]
+            for c in cells:  # bullets of varied size, shade and position beside most lines, some touching the edge
+                if rng.random() < 0.7:
+                    left = c.rect.to_bounding_box().l - float(rng.uniform(1, 25))
+                    top = c.rect.to_bounding_box().t + float(rng.uniform(-2, 9))
+                    size, shade = float(rng.uniform(1, 9)), int(rng.integers(0, 220))
+                    draw.ellipse([left * 2, top * 2, (left + size) * 2, (top + size) * 2], fill=(shade,) * 3)
+            for _ in range(int(rng.integers(0, 4))):  # photos and noise
+                x, y, w = (float(v) for v in rng.uniform([0, 0, 2], [150, 200, 60]))
+                draw.rectangle([x * 2, y * 2, (x + w) * 2, (y + w) * 2], fill=(int(rng.integers(0, 255)),) * 3)
+            lines = text_lines(cells)
+            page_cells = (
+                [cell("x", float(rng.uniform(0, 100)), float(rng.uniform(0, 200)))] if rng.random() < 0.3 else []
+            )
+            expected = reference_ink_marks(img, 2.0, lines, page_cells)
+            assert ink_marks(img, 2.0, lines, page_cells) == expected
+            # A preview at half the resolution (each pixel the mean of four) skips no mark either
+            lines_of = {i: [ln] for i, ln in enumerate(lines)}
+            full = page_ink_marks(InkPage(cells=page_cells, image=lambda img=img: img), lines_of)
+            previewed = page_ink_marks(
+                InkPage(cells=page_cells, image=lambda img=img: img, preview=lambda img=img: (img.reduce(2), 1.0)),
+                lines_of,
+            )
+            assert previewed == full
+            found += sum(m is not None for m in expected)
+        assert found > 50  # the comparison covers lines with marks, not only empty windows
+
+    def test_window_beyond_the_image(self):
+        img = Image.new("L", (200, 150), 255)  # smaller than the page coordinates: crops are clamped
+        ImageDraw.Draw(img).ellipse([94, 145, 100, 150], fill=0)
+        lines = text_lines([cell("Unten", 60, 70), cell("Rand", 60, 100)])
+        assert ink_marks(img, 2.0, lines, []) == reference_ink_marks(img, 2.0, lines, [])
+
+    @staticmethod
+    def two_lines():
+        return {1: text_lines([cell("Budgetberatung", 60, 100)]), 2: text_lines([cell("Schuldenberatung", 60, 120)])}
+
+    def test_lone_window_loads_no_image(self):
+        def image():
+            pytest.fail("no line can have an aligned mark: the image must not load")
+
+        page = InkPage(cells=[], image=image, preview=image)
+        assert page_ink_marks(page, {1: text_lines([cell("Einzeln", 60, 100)])}) == {1: [None]}
+
+    def test_windows_too_far_apart_load_no_image(self):
+        def image():
+            pytest.fail("windows 100pt apart cannot hold aligned marks")
+
+        lines_of = {1: text_lines([cell("Links", 60, 100)]), 2: text_lines([cell("Rechts", 300, 120)])}
+        assert page_ink_marks(InkPage(cells=[], image=image), lines_of) == {1: [None], 2: [None]}
+
+    def test_blank_preview_skips_the_image(self):
+        def image():
+            pytest.fail("the preview shows no ink: the image must not load")
+
+        page = InkPage(cells=[], image=image, preview=lambda: (page_with_marks([], scale=1.0), 1.0))
+        assert page_ink_marks(page, self.two_lines()) == {1: [None], 2: [None]}
+
+    def test_preview_with_ink_loads_the_image(self):
+        marks = [(47, 104.5), (47, 124.5)]
+        loaded = []
+
+        def image():
+            loaded.append(True)
+            return page_with_marks(marks)
+
+        page = InkPage(cells=[], image=image, preview=lambda: (page_with_marks(marks, scale=1.0), 1.0))
+        out = page_ink_marks(page, self.two_lines())
+        assert loaded == [True]
+        assert out[1][0] is not None
+        assert out[2][0] is not None
+
+    def test_threshold_only_when_a_window_has_dark_pixels(self):
+        lines = text_lines([cell("A", 60, 100), cell("B", 60, 120)])
+        threshold = lists._Threshold(page_with_marks([]))
+        assert lists._line_marks(page_with_marks([]), 2.0, lines, [(30.0, 58.0), (30.0, 58.0)], threshold) == [
+            None,
+            None,
+        ]
+        assert threshold._value is None
+
+    def test_relabel_with_ink_page(self):
+        img = page_with_marks([(47, 104.5), (47, 124.5)])
+        clusters = [para(1, ["Budgetberatung"], left=60), para(2, ["Schuldenberatung"], top=120, left=60)]
+        out = run(clusters, ink=lambda: InkPage(cells=[], image=lambda: img))
+        assert [c.label for c in out] == [DocItemLabel.LIST_ITEM] * 2
+
+    def test_page_without_image(self):
+        clusters = [para(1, ["Budgetberatung"], left=60), para(2, ["Schuldenberatung"], top=120, left=60)]
+        out = run(clusters, ink=lambda: InkPage(cells=[], image=lambda: None))
+        assert [c.label for c in out] == [DocItemLabel.TEXT] * 2
+
+
+@pytest.mark.parametrize("top", [-0.4, -1.0, -1.6, -30.0])
+def test_lines_above_the_page_edge_match_the_whole_page_search(top):
+    """A line that starts above the page gets the window numpy slicing gave it (none at all, mostly)."""
+    image = Image.new("RGB", (400, 400), "white")
+    ImageDraw.Draw(image).rectangle((60, 3, 64, 7), fill="black")  # a bullet at the top edge (scale 2)
+    line = lists.Line("item", 40.0, top, 120.0, top + 6.0)
+    assert ink_marks(image, 2.0, [line], []) == reference_ink_marks(image, 2.0, [line], [])

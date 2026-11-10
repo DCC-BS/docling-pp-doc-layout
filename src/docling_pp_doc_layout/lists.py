@@ -23,6 +23,7 @@ no neighbour.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -39,8 +40,9 @@ if TYPE_CHECKING:
     from docling_core.types.doc.page import TextCell
     from PIL import Image
 
-    # Loads the page image, its scale and all text cells of the page (top-left coordinates)
-    InkSource = Callable[[], tuple[Image.Image, float, Sequence[TextCell]] | None]
+    # Loads what ink marks need from the page: an InkPage, or the page image, its scale and all
+    # text cells of the page (top-left coordinates); None disables ink marks for the page
+    InkSource = Callable[[], "InkPage | tuple[Image.Image, float, Sequence[TextCell]] | None"]
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,10 @@ HERON_INSIDE = 0.5  # share of a Heron list item that must lie inside the PP reg
 HERON_COVER = 0.5  # share of the PP region a single Heron list item must cover
 MIN_ROOM_PT = 2  # narrower search windows left of a line are skipped
 MAX_MARK_INK = 0.5  # share of dark pixels in the search window, above which it is an image, not a mark
+MARK_DARK = 160  # the ink threshold never exceeds this gray level
+# A search window whose pixels in the lower-resolution preview are all lighter than this holds no
+# mark: a pixel darker than MARK_DARK at twice the resolution averages to at most 232 in the preview
+PREVIEW_INK = 250
 
 EnumKey = tuple[tuple[str, bool, str], int]
 
@@ -170,38 +176,172 @@ def text_lines(cells: Sequence[TextCell]) -> list[Line]:
     return lines
 
 
-def _ink_mark(gray: np.ndarray, threshold: int, scale: float, line: Line, boxes: Sequence[BoundingBox]) -> float | None:
+@dataclass
+class InkPage:
+    """What ink marks need from a page. The images load only when a line could have a mark.
+
+    Attributes:
+        cells: All text cells of the page, top-left coordinates.
+        image: Loads the page image at ``scale`` (None if the page has none).
+        scale: Pixels per point of ``image``.
+        preview: Loads an image the page already has at a lower scale, and that scale, to check
+            cheaply whether the search windows hold any ink at all; None skips the check.
+    """
+
+    cells: Sequence[TextCell]
+    image: Callable[[], Image.Image | None]
+    scale: float = 2.0
+    preview: Callable[[], tuple[Image.Image | None, float]] | None = None
+
+
+def _window(line: Line, boxes: Sequence[BoundingBox]) -> tuple[float, float] | None:
+    """The x range (points) left of a line where a bare mark could sit; None if there is no room or text is there."""
     h = max(line.bottom - line.top, 4.0)
     x0, x1 = max(0.0, line.left - 2.5 * h), line.left - 0.12 * h
     if x1 - x0 < MIN_ROOM_PT or any(bb.r > x0 and bb.l < x1 and bb.b > line.top and bb.t < line.bottom for bb in boxes):
-        return None  # no room, or text there: not a bare mark
-    window = gray[int(line.top * scale) : int(line.bottom * scale) + 1, int(x0 * scale) : int(x1 * scale) + 1]
-    window = window < threshold
-    if window.size == 0 or not window.any():
         return None
-    ys, xs = np.nonzero(window)
+    return x0, x1
+
+
+def _pixel_box(line: Line, x0: float, x1: float, scale: float, size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """The window in pixels (left, top, right, bottom), as a numpy slice of the page selects it.
+
+    The rows and columns of ``gray[int(top * s) : int(bottom * s) + 1, int(x0 * s) : int(x1 * s) + 1]``,
+    negative indices counted from the end as numpy does (a line above the page gets an empty window).
+    """
+    width, height = size
+    left, right = slice(int(x0 * scale), int(x1 * scale) + 1).indices(width)[:2]
+    top, bottom = slice(int(line.top * scale), int(line.bottom * scale) + 1).indices(height)[:2]
+    return left, top, max(left, right), max(top, bottom)
+
+
+class _Threshold:
+    """The page's ink threshold, computed on first use: 40 gray levels below the page mean, at most MARK_DARK."""
+
+    def __init__(self, image: Image.Image) -> None:
+        self._image = image
+        self._value: int | None = None
+
+    def __call__(self) -> int:
+        if self._value is None:
+            # The mean from the histogram: the same integer sum and division as numpy's mean of the pixels
+            hist = self._image.convert("L").histogram()
+            mean = sum(level * count for level, count in enumerate(hist)) / sum(hist)
+            self._value = min(MARK_DARK, int(mean) - 40)
+        return self._value
+
+
+def _ink_mark(window: np.ndarray, threshold: int, scale: float, line: Line, x0: float) -> float | None:
+    """The x of a small isolated mark in a line's search window (gray pixels), else None."""
+    h = max(line.bottom - line.top, 4.0)
+    dark = window < threshold
+    if dark.size == 0 or not dark.any():
+        return None
+    ys, xs = np.nonzero(dark)
     width, height = (xs.max() - xs.min() + 1) / scale, (ys.max() - ys.min() + 1) / scale
     cy = line.top + (ys.min() + ys.max()) / (2 * scale)
-    isolated = ys.min() > 0 and ys.max() < window.shape[0] - 1 and xs.min() > 0  # not the edge of an image
+    isolated = ys.min() > 0 and ys.max() < dark.shape[0] - 1 and xs.min() > 0  # not the edge of an image
     if (
         isolated
         and width <= 0.9 * h
         and height <= 0.8 * h
         and line.top + 0.15 * h <= cy <= line.bottom - 0.1 * h
-        and window.mean() < MAX_MARK_INK
+        and dark.mean() < MAX_MARK_INK
     ):
         return float(x0 + xs.min() / scale)
     return None
+
+
+def _line_marks(
+    image: Image.Image,
+    scale: float,
+    lines: Sequence[Line],
+    windows: Sequence[tuple[float, float] | None],
+    threshold: _Threshold,
+) -> list[float | None]:
+    """Per line: the mark in its window. Only the windows are converted to gray, not the page."""
+    marks: list[float | None] = []
+    for line, win in zip(lines, windows, strict=True):
+        if win is None:
+            marks.append(None)
+            continue
+        box = _pixel_box(line, win[0], win[1], scale, image.size)
+        if box[0] >= box[2] or box[1] >= box[3]:
+            marks.append(None)
+            continue
+        gray = np.asarray(image.crop(box).convert("L"), dtype=np.uint8)
+        # No pixel darker than the highest possible threshold: no mark, and no need for the page mean
+        marks.append(None if gray.min() >= MARK_DARK else _ink_mark(gray, threshold(), scale, line, win[0]))
+    return marks
 
 
 def ink_marks(
     image: Image.Image, scale: float, lines: Sequence[Line], page_cells: Sequence[TextCell]
 ) -> list[float | None]:
     """Per line: x of a small isolated ink mark just left of the text where no text cell is, else None."""
-    gray = np.asarray(image.convert("L"), dtype=np.uint8)
-    threshold = min(160, int(gray.mean()) - 40)
     boxes = [c.rect.to_bounding_box() for c in page_cells]
-    return [_ink_mark(gray, threshold, scale, ln, boxes) for ln in lines]
+    return _line_marks(image, scale, lines, [_window(ln, boxes) for ln in lines], _Threshold(image))
+
+
+def _partnered(
+    windows: dict[int, list[tuple[float, float] | None]], scale: float
+) -> dict[int, list[tuple[float, float] | None]]:
+    """Drop the windows whose mark could never be kept by :func:`_aligned`.
+
+    A mark lies in [x0, x1 + 1 px] of its window; it is kept only if MIN_ITEMS marks (itself
+    included) lie within SAME_X_PT of each other, so its window needs that many windows within
+    SAME_X_PT of it.
+    """
+    spans = [(w[0], w[1] + 1 / scale) for ws in windows.values() for w in ws if w is not None]
+
+    def partnered(w: tuple[float, float]) -> bool:
+        lo, hi = w[0], w[1] + 1 / scale
+        return sum(a - hi < SAME_X_PT and lo - b < SAME_X_PT for a, b in spans) >= MIN_ITEMS
+
+    return {cid: [w if w is not None and partnered(w) else None for w in ws] for cid, ws in windows.items()}
+
+
+def _has_preview_ink(
+    preview: Image.Image, preview_scale: float, line: Line, win: tuple[float, float], scale: float
+) -> bool:
+    """Whether the preview holds any ink in the window (grown by a pixel, so no mark pixel is missed)."""
+    width, height = preview.size
+    left = max(0, math.floor(win[0] * preview_scale) - 1)
+    top = max(0, math.floor(line.top * preview_scale) - 1)
+    right = min(width, math.ceil((win[1] + 1 / scale) * preview_scale) + 1)
+    bottom = min(height, math.ceil(line.bottom * preview_scale) + 1)
+    if left >= right or top >= bottom:
+        return False
+    return bool(np.asarray(preview.crop((left, top, right, bottom)).convert("L")).min() < PREVIEW_INK)
+
+
+def _ink_page(image: Image.Image, scale: float, cells: Sequence[TextCell]) -> InkPage:
+    return InkPage(cells=cells, image=lambda: image, scale=scale)
+
+
+def page_ink_marks(page: InkPage, lines_of: dict[int, list[Line]]) -> dict[int, list[float | None]]:
+    """Per text region and line: the x of its ink mark, else None (before :func:`_aligned`).
+
+    Loads the page image only if two or more lines could carry aligned marks and, when the page
+    has a preview, the preview shows ink in at least one of their windows.
+    """
+    boxes = [c.rect.to_bounding_box() for c in page.cells]
+    windows = _partnered({cid: [_window(ln, boxes) for ln in lines] for cid, lines in lines_of.items()}, page.scale)
+    none: dict[int, list[float | None]] = {cid: [None] * len(lines) for cid, lines in lines_of.items()}
+    candidates = [(lines_of[cid][i], w) for cid, ws in windows.items() for i, w in enumerate(ws) if w is not None]
+    if not candidates:
+        return none
+    if page.preview is not None:
+        preview, preview_scale = page.preview()
+        if preview is not None and not any(
+            _has_preview_ink(preview, preview_scale, ln, w, page.scale) for ln, w in candidates
+        ):
+            return none
+    image = page.image()
+    if image is None:
+        return none
+    threshold = _Threshold(image)
+    return {cid: _line_marks(image, page.scale, lines_of[cid], ws, threshold) for cid, ws in windows.items()}
 
 
 def _aligned(marks: dict[int, list[float | None]]) -> dict[int, list[float | None]]:
@@ -282,7 +422,7 @@ def relabel(
         clusters: Post-processed clusters of one page, cells assigned.
         cells_of: Cells of a cluster in top-left coordinates.
         doc_key: Identifies the document, for enumerator sequences across pages.
-        ink: Loads the page image, its scale and the page's text cells, for ink marks; None disables them.
+        ink: Loads the page's InkPage (or its image, scale and text cells) for ink marks; None disables them.
         veto: Turn list items whose enumerator has no neighbour back into text (Heron list items).
     """
     kinds = (DocItemLabel.TEXT, DocItemLabel.LIST_ITEM, DocItemLabel.TABLE)
@@ -290,10 +430,9 @@ def relabel(
     state = _PageState(doc_key, {k for lines in lines_of.values() for ln in lines for k in enum_keys(ln.text)}, {},
                        max((c.id for c in clusters), default=0))  # fmt: skip
     if ink is not None and (loaded := ink()) is not None:
-        image, scale, page_cells = loaded
+        page = loaded if isinstance(loaded, InkPage) else _ink_page(*loaded)
         text_ids = {cl.id for cl in clusters if cl.label == DocItemLabel.TEXT}
-        state.marks = _aligned({cid: ink_marks(image, scale, lines, page_cells)
-                                for cid, lines in lines_of.items() if cid in text_ids})  # fmt: skip
+        state.marks = _aligned(page_ink_marks(page, {cid: lines for cid, lines in lines_of.items() if cid in text_ids}))
 
     out: list[Cluster] = []
     for cl in clusters:
