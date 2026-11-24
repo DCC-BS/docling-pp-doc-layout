@@ -1,5 +1,5 @@
 [tools]
-uv = "0.13.9"
+uv = "0.13.10"
 
 [hooks]
 postinstall = { task = "install" }
